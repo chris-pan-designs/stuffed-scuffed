@@ -1,14 +1,12 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import Svg, { Circle, Path } from 'react-native-svg';
-
 import { removeBackground } from '@/lib/backgroundRemoval';
 import { detectOutlineFromPngDataUri, type DetectedOutline } from '@/lib/outlineDetection';
 
 export default function HomeScreen() {
   const [cutoutImageUri, setCutoutImageUri] = useState<string | null>(null);
-  const [outline, setOutline] = useState<DetectedOutline | null>(null);
+  const latestOutlineRef = useRef<DetectedOutline | null>(null);
   const [isRemovingBackground, setIsRemovingBackground] = useState(false);
 
   const pickImage = async () => {
@@ -30,7 +28,7 @@ export default function HomeScreen() {
     }
 
     setIsRemovingBackground(true);
-    setOutline(null);
+    latestOutlineRef.current = null;
 
     try {
       const selectedImage = result.assets[0];
@@ -56,7 +54,7 @@ export default function HomeScreen() {
         });
 
         setCutoutImageUri(imageDataUri);
-        setOutline(detectOutlineFromPngDataUri(imageDataUri));
+        latestOutlineRef.current = detectOutlineFromPngDataUri(imageDataUri);
         return;
       }
 
@@ -67,7 +65,7 @@ export default function HomeScreen() {
       });
 
       setCutoutImageUri(cutout.cutoutUri);
-      setOutline(detectOutlineFromPngDataUri(cutout.cutoutUri));
+      latestOutlineRef.current = detectOutlineFromPngDataUri(cutout.cutoutUri);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Something went wrong.';
       Alert.alert('Could not cut out photo', message);
@@ -86,35 +84,6 @@ export default function HomeScreen() {
               resizeMode="contain"
               style={styles.previewImage}
             />
-
-            {outline ? (
-              <Svg
-                pointerEvents="none"
-                style={styles.outlineOverlay}
-                viewBox={`0 0 ${outline.imageWidth} ${outline.imageHeight}`}>
-                {outline.path ? (
-                  <Path
-                    d={outline.path}
-                    fill="none"
-                    stroke="#FF3B8A"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={Math.max(outline.imageWidth, outline.imageHeight) * 0.007}
-                    opacity={0.95}
-                  />
-                ) : null}
-                {outline.points.map((point, index) => (
-                  <Circle
-                    key={`outline-point-${index}`}
-                    cx={point.x}
-                    cy={point.y}
-                    r={Math.max(outline.imageWidth, outline.imageHeight) * 0.0025}
-                    fill="#FF3B8A"
-                    opacity={0.45}
-                  />
-                ))}
-              </Svg>
-            ) : null}
           </View>
         ) : null}
 
@@ -157,13 +126,16 @@ const styles = StyleSheet.create({
   previewFrame: {
     width: '100%',
     height: '72%',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 18 },
+    shadowOpacity: 0.2,
+    shadowRadius: 24,
+    elevation: 8,
+    transform: [{ rotate: '-2deg' }, { scale: 1.03 }],
   },
   previewImage: {
     width: '100%',
     height: '100%',
-  },
-  outlineOverlay: {
-    ...StyleSheet.absoluteFillObject,
   },
   loadingPill: {
     position: 'absolute',
