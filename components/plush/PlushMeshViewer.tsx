@@ -4,7 +4,7 @@ import { GLView, type ExpoWebGLRenderingContext } from 'expo-gl';
 import { Renderer, TextureLoader } from 'expo-three';
 import * as THREE from 'three';
 
-import type { DetectedOutline } from '@/lib/outlineDetection';
+import type { DetectedOutline, OutlinePoint } from '@/lib/outlineDetection';
 
 type PlushMeshViewerProps = {
   imageUri: string;
@@ -34,17 +34,73 @@ const createTexture = (imageUri: string) => {
   return texture;
 };
 
-const puffPlaneGeometry = (geometry: THREE.PlaneGeometry, direction: 1 | -1) => {
+const normalizeOutlinePoints = (outline: DetectedOutline) => {
+  const sourceMaxDimension = Math.max(outline.imageWidth, outline.imageHeight);
+  const centerX = outline.imageWidth / 2;
+  const centerY = outline.imageHeight / 2;
+
+  return outline.points.map((point) => ({
+    x: ((point.x - centerX) / sourceMaxDimension) * PLUSH_WIDTH,
+    y: -((point.y - centerY) / sourceMaxDimension) * PLUSH_WIDTH,
+  }));
+};
+
+const findCenter = (points: OutlinePoint[]) => {
+  const total = points.reduce(
+    (accumulator, point) => ({
+      x: accumulator.x + point.x,
+      y: accumulator.y + point.y,
+    }),
+    { x: 0, y: 0 }
+  );
+
+  return {
+    x: total.x / points.length,
+    y: total.y / points.length,
+  };
+};
+
+const createBoundaryLookup = (outline: DetectedOutline) => {
+  const points = normalizeOutlinePoints(outline);
+  const center = findCenter(points);
+  const buckets = new Map<number, number>();
+
+  points.forEach((point) => {
+    const angle = Math.atan2(point.y - center.y, point.x - center.x);
+    const bucket = Math.round(((angle + Math.PI) / (Math.PI * 2)) * 720);
+    const radius = Math.hypot(point.x - center.x, point.y - center.y);
+    buckets.set(bucket, Math.max(buckets.get(bucket) ?? 0, radius));
+  });
+
+  return { center, buckets };
+};
+
+const getSubjectEdgeFalloff = (
+  x: number,
+  y: number,
+  boundary: ReturnType<typeof createBoundaryLookup>
+) => {
+  const angle = Math.atan2(y - boundary.center.y, x - boundary.center.x);
+  const bucket = Math.round(((angle + Math.PI) / (Math.PI * 2)) * 720);
+  const boundaryRadius = boundary.buckets.get(bucket) ?? PLUSH_WIDTH * 0.5;
+  const radius = Math.hypot(x - boundary.center.x, y - boundary.center.y);
+  const normalizedRadius = Math.min(1, radius / Math.max(boundaryRadius, 0.001));
+
+  return Math.pow(Math.max(0, 1 - normalizedRadius), 0.8);
+};
+
+const puffPlaneGeometry = (
+  geometry: THREE.PlaneGeometry,
+  direction: 1 | -1,
+  boundary: ReturnType<typeof createBoundaryLookup>
+) => {
   const position = geometry.getAttribute('position');
 
   for (let index = 0; index < position.count; index += 1) {
     const x = position.getX(index);
     const y = position.getY(index);
-    const normalizedX = Math.abs(x) / (PLUSH_WIDTH / 2);
-    const normalizedY = Math.abs(y) / (PLUSH_WIDTH / 2);
-    const distance = Math.min(1, Math.hypot(normalizedX * 0.82, normalizedY * 0.82));
-    const centerPuff = Math.max(0, 1 - distance * distance);
-    const z = direction * (EDGE_GAP + PUFF_AMOUNT * centerPuff);
+    const edgeFalloff = getSubjectEdgeFalloff(x, y, boundary);
+    const z = direction * (EDGE_GAP + PUFF_AMOUNT * edgeFalloff);
 
     position.setZ(index, z);
   }
@@ -57,15 +113,17 @@ const createPuffedPhotoSurface = ({
   texture,
   aspectRatio,
   direction,
+  boundary,
 }: {
   texture: THREE.Texture;
   aspectRatio: number;
   direction: 1 | -1;
+  boundary: ReturnType<typeof createBoundaryLookup>;
 }) => {
   const width = PLUSH_WIDTH;
   const height = PLUSH_WIDTH / aspectRatio;
   const geometry = new THREE.PlaneGeometry(width, height, SURFACE_SEGMENTS, SURFACE_SEGMENTS);
-  puffPlaneGeometry(geometry, direction);
+  puffPlaneGeometry(geometry, direction, boundary);
 
   const material = new THREE.MeshBasicMaterial({
     map: texture,
@@ -82,8 +140,9 @@ const createPlushMesh = (imageUri: string, outline: DetectedOutline) => {
   const texture = createTexture(imageUri);
   const aspectRatio = outline.imageWidth / outline.imageHeight;
 
-  const frontMesh = createPuffedPhotoSurface({ texture, aspectRatio, direction: 1 });
-  const backMesh = createPuffedPhotoSurface({ texture, aspectRatio, direction: -1 });
+  const boundary = createBoundaryLookup(outline);
+  const frontMesh = createPuffedPhotoSurface({ texture, aspectRatio, direction: 1, boundary });
+  const backMesh = createPuffedPhotoSurface({ texture, aspectRatio, direction: -1, boundary });
 
   group.add(frontMesh, backMesh);
   group.rotation.x = -0.1;
