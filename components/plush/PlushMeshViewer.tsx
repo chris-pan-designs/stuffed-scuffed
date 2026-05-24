@@ -4,7 +4,7 @@ import { GLView, type ExpoWebGLRenderingContext } from 'expo-gl';
 import { Renderer, TextureLoader } from 'expo-three';
 import * as THREE from 'three';
 
-import type { DetectedOutline } from '@/lib/outlineDetection';
+import type { DetectedOutline, OutlinePoint } from '@/lib/outlineDetection';
 
 type PlushMeshViewerProps = {
   imageUri: string;
@@ -19,8 +19,8 @@ type SceneState = {
 
 const SURFACE_SEGMENTS = 92;
 const PLUSH_WIDTH = 3.1;
-const PLUSH_THICKNESS = 0.004;
-const PUFF_AMOUNT = 0.035;
+const PLUSH_THICKNESS = 0.012;
+const PUFF_AMOUNT = 0.22;
 
 const createTexture = (imageUri: string) => {
   const texture = new TextureLoader().load(imageUri);
@@ -44,14 +44,67 @@ const puffPlaneGeometry = (geometry: THREE.PlaneGeometry, direction: 1 | -1) => 
     const normalizedY = Math.abs(y) / (PLUSH_WIDTH / 2);
     const distance = Math.min(1, Math.hypot(normalizedX * 0.82, normalizedY * 0.82));
     const centerPuff = Math.max(0, 1 - distance * distance);
-    const edgeBlend = Math.min(1, distance * distance);
-    const z = direction * (PLUSH_THICKNESS * edgeBlend + PUFF_AMOUNT * centerPuff);
+    const z = direction * (PLUSH_THICKNESS + PUFF_AMOUNT * centerPuff);
 
     position.setZ(index, z);
   }
 
   position.needsUpdate = true;
   geometry.computeVertexNormals();
+};
+
+const normalizeOutlinePoints = (outline: DetectedOutline) => {
+  const sourceMaxDimension = Math.max(outline.imageWidth, outline.imageHeight);
+  const centerX = outline.imageWidth / 2;
+  const centerY = outline.imageHeight / 2;
+  const aspectRatio = outline.imageWidth / outline.imageHeight;
+  const width = PLUSH_WIDTH;
+  const height = PLUSH_WIDTH / aspectRatio;
+
+  return outline.points.map((point) => ({
+    x: Math.max(-width / 2, Math.min(width / 2, ((point.x - centerX) / sourceMaxDimension) * PLUSH_WIDTH)),
+    y: Math.max(-height / 2, Math.min(height / 2, -((point.y - centerY) / sourceMaxDimension) * PLUSH_WIDTH)),
+  }));
+};
+
+const limitConnectorPoints = (points: OutlinePoint[]) => {
+  const step = Math.max(1, Math.ceil(points.length / 220));
+  return points.filter((_, index) => index % step === 0);
+};
+
+const createEdgeConnector = (outline: DetectedOutline) => {
+  const points = limitConnectorPoints(normalizeOutlinePoints(outline));
+  const geometry = new THREE.BufferGeometry();
+  const positions: number[] = [];
+  const indices: number[] = [];
+
+  points.forEach((point) => {
+    positions.push(point.x, point.y, PLUSH_THICKNESS, point.x, point.y, -PLUSH_THICKNESS);
+  });
+
+  points.forEach((_, index) => {
+    const nextIndex = (index + 1) % points.length;
+    const frontCurrent = index * 2;
+    const backCurrent = frontCurrent + 1;
+    const frontNext = nextIndex * 2;
+    const backNext = frontNext + 1;
+
+    indices.push(frontCurrent, backCurrent, frontNext, backCurrent, backNext, frontNext);
+  });
+
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+
+  return new THREE.Mesh(
+    geometry,
+    new THREE.MeshBasicMaterial({
+      color: '#2b2928',
+      transparent: true,
+      opacity: 0.26,
+      side: THREE.DoubleSide,
+    })
+  );
 };
 
 const createPuffedPhotoSurface = ({
@@ -85,8 +138,9 @@ const createPlushMesh = (imageUri: string, outline: DetectedOutline) => {
 
   const frontMesh = createPuffedPhotoSurface({ texture, aspectRatio, direction: 1 });
   const backMesh = createPuffedPhotoSurface({ texture, aspectRatio, direction: -1 });
+  const edgeConnector = createEdgeConnector(outline);
 
-  group.add(frontMesh, backMesh);
+  group.add(edgeConnector, frontMesh, backMesh);
   group.rotation.x = -0.1;
   group.rotation.y = -0.25;
 
