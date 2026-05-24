@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { PanResponder, StyleSheet, View } from 'react-native';
 import { GLView, type ExpoWebGLRenderingContext } from 'expo-gl';
 import { Renderer, TextureLoader } from 'expo-three';
+import earcut from 'earcut';
 import * as THREE from 'three';
 
 import type { DetectedOutline, OutlinePoint } from '@/lib/outlineDetection';
@@ -18,9 +19,9 @@ type SceneState = {
 };
 
 const PLUSH_WIDTH = 3.1;
-const PUFF_AMOUNT = 0.3;
-const RING_COUNT = 18;
-const MAX_OUTLINE_POINTS = 180;
+const PUFF_AMOUNT = 0.22;
+const EDGE_THICKNESS = 0.012;
+const MAX_OUTLINE_POINTS = 220;
 
 const createTexture = (imageUri: string) => {
   const texture = new TextureLoader().load(imageUri);
@@ -65,82 +66,98 @@ const findCenter = (points: OutlinePoint[]) => {
   };
 };
 
-const createPhotoPillowFace = ({
+const getPuffForPoint = (point: OutlinePoint, center: OutlinePoint) => {
+  const distance = Math.hypot(point.x - center.x, point.y - center.y);
+  const normalizedDistance = Math.min(1, distance / (PLUSH_WIDTH * 0.48));
+
+  return PUFF_AMOUNT * Math.max(0, 1 - normalizedDistance * normalizedDistance);
+};
+
+const createFaceGeometry = ({
   points,
   outline,
-  texture,
   direction,
 }: {
   points: OutlinePoint[];
   outline: DetectedOutline;
-  texture: THREE.Texture;
   direction: 1 | -1;
 }) => {
   const center = findCenter(points);
+  const vertices = points.flatMap((point) => [point.x, point.y]);
+  const triangleIndices = earcut(vertices);
   const positions: number[] = [];
   const uvs: number[] = [];
-  const indices: number[] = [];
   const sourceMaxDimension = Math.max(outline.imageWidth, outline.imageHeight);
 
-  for (let ring = 0; ring <= RING_COUNT; ring += 1) {
-    const t = ring / RING_COUNT;
-    const puff = PUFF_AMOUNT * (1 - t * t);
+  points.forEach((point) => {
+    const z = direction * (EDGE_THICKNESS + getPuffForPoint(point, center));
+    const sourceX = outline.imageWidth / 2 + (point.x / PLUSH_WIDTH) * sourceMaxDimension;
+    const sourceY = outline.imageHeight / 2 - (point.y / PLUSH_WIDTH) * sourceMaxDimension;
 
-    points.forEach((edgePoint) => {
-      const x = center.x + (edgePoint.x - center.x) * t;
-      const y = center.y + (edgePoint.y - center.y) * t;
-      const z = direction * puff;
-      const sourceX = outline.imageWidth / 2 + (x / PLUSH_WIDTH) * sourceMaxDimension;
-      const sourceY = outline.imageHeight / 2 - (y / PLUSH_WIDTH) * sourceMaxDimension;
+    positions.push(point.x, point.y, z);
+    uvs.push(sourceX / outline.imageWidth, sourceY / outline.imageHeight);
+  });
 
-      positions.push(x, y, z);
-      uvs.push(sourceX / outline.imageWidth, sourceY / outline.imageHeight);
-    });
-  }
-
-  const pointsPerRing = points.length;
-
-  for (let ring = 0; ring < RING_COUNT; ring += 1) {
-    for (let index = 0; index < pointsPerRing; index += 1) {
-      const nextIndex = (index + 1) % pointsPerRing;
-      const current = ring * pointsPerRing + index;
-      const next = ring * pointsPerRing + nextIndex;
-      const outerCurrent = (ring + 1) * pointsPerRing + index;
-      const outerNext = (ring + 1) * pointsPerRing + nextIndex;
-
-      if (direction === 1) {
-        indices.push(current, outerCurrent, next, next, outerCurrent, outerNext);
-      } else {
-        indices.push(current, next, outerCurrent, next, outerNext, outerCurrent);
-      }
-    }
-  }
-
+  const indices = direction === 1 ? triangleIndices : [...triangleIndices].reverse();
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
 
-  const material = new THREE.MeshBasicMaterial({
-    map: texture,
-    transparent: true,
-    alphaTest: 0.08,
-    side: THREE.DoubleSide,
+  return geometry;
+};
+
+const createEdgeGeometry = (points: OutlinePoint[]) => {
+  const positions: number[] = [];
+  const indices: number[] = [];
+
+  points.forEach((point) => {
+    positions.push(point.x, point.y, EDGE_THICKNESS, point.x, point.y, -EDGE_THICKNESS);
   });
 
-  return new THREE.Mesh(geometry, material);
+  points.forEach((_, index) => {
+    const nextIndex = (index + 1) % points.length;
+    const frontCurrent = index * 2;
+    const backCurrent = frontCurrent + 1;
+    const frontNext = nextIndex * 2;
+    const backNext = frontNext + 1;
+
+    indices.push(frontCurrent, backCurrent, frontNext, backCurrent, backNext, frontNext);
+  });
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+
+  return geometry;
 };
 
 const createPlushMesh = (imageUri: string, outline: DetectedOutline) => {
   const group = new THREE.Group();
   const texture = createTexture(imageUri);
   const points = normalizeOutlinePoints(outline);
+  const photoMaterial = new THREE.MeshBasicMaterial({
+    map: texture,
+    transparent: true,
+    alphaTest: 0.08,
+    side: THREE.DoubleSide,
+  });
 
-  const frontMesh = createPhotoPillowFace({ points, outline, texture, direction: 1 });
-  const backMesh = createPhotoPillowFace({ points, outline, texture, direction: -1 });
+  const frontMesh = new THREE.Mesh(createFaceGeometry({ points, outline, direction: 1 }), photoMaterial);
+  const backMesh = new THREE.Mesh(createFaceGeometry({ points, outline, direction: -1 }), photoMaterial);
+  const edgeMesh = new THREE.Mesh(
+    createEdgeGeometry(points),
+    new THREE.MeshBasicMaterial({
+      color: '#262321',
+      transparent: true,
+      opacity: 0.16,
+      side: THREE.DoubleSide,
+    })
+  );
 
-  group.add(frontMesh, backMesh);
+  group.add(edgeMesh, frontMesh, backMesh);
   group.rotation.x = -0.1;
   group.rotation.y = -0.25;
 
