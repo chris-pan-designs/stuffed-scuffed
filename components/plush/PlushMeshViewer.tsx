@@ -4,7 +4,7 @@ import { GLView, type ExpoWebGLRenderingContext } from 'expo-gl';
 import { Renderer, TextureLoader } from 'expo-three';
 import * as THREE from 'three';
 
-import type { DetectedOutline } from '@/lib/outlineDetection';
+import type { DetectedOutline, OutlinePoint } from '@/lib/outlineDetection';
 
 type PlushMeshViewerProps = {
   imageUri: string;
@@ -17,10 +17,10 @@ type SceneState = {
   renderer: THREE.WebGLRenderer | null;
 };
 
-const SURFACE_SEGMENTS = 92;
 const PLUSH_WIDTH = 3.1;
-const EDGE_GAP = 0;
-const PUFF_AMOUNT = 0.18;
+const PUFF_AMOUNT = 0.3;
+const RING_COUNT = 18;
+const MAX_OUTLINE_POINTS = 180;
 
 const createTexture = (imageUri: string) => {
   const texture = new TextureLoader().load(imageUri);
@@ -34,38 +34,93 @@ const createTexture = (imageUri: string) => {
   return texture;
 };
 
-const puffPlaneGeometry = (geometry: THREE.PlaneGeometry, direction: 1 | -1) => {
-  const position = geometry.getAttribute('position');
-
-  for (let index = 0; index < position.count; index += 1) {
-    const x = position.getX(index);
-    const y = position.getY(index);
-    const normalizedX = Math.abs(x) / (PLUSH_WIDTH / 2);
-    const normalizedY = Math.abs(y) / (PLUSH_WIDTH / 2);
-    const distance = Math.min(1, Math.hypot(normalizedX * 0.82, normalizedY * 0.82));
-    const centerPuff = Math.max(0, 1 - distance * distance);
-    const z = direction * (EDGE_GAP + PUFF_AMOUNT * centerPuff);
-
-    position.setZ(index, z);
-  }
-
-  position.needsUpdate = true;
-  geometry.computeVertexNormals();
+const limitOutlinePoints = (points: OutlinePoint[]) => {
+  const step = Math.max(1, Math.ceil(points.length / MAX_OUTLINE_POINTS));
+  return points.filter((_, index) => index % step === 0);
 };
 
-const createPuffedPhotoSurface = ({
+const normalizeOutlinePoints = (outline: DetectedOutline) => {
+  const sourceMaxDimension = Math.max(outline.imageWidth, outline.imageHeight);
+  const centerX = outline.imageWidth / 2;
+  const centerY = outline.imageHeight / 2;
+
+  return limitOutlinePoints(outline.points).map((point) => ({
+    x: ((point.x - centerX) / sourceMaxDimension) * PLUSH_WIDTH,
+    y: -((point.y - centerY) / sourceMaxDimension) * PLUSH_WIDTH,
+  }));
+};
+
+const findCenter = (points: OutlinePoint[]) => {
+  const total = points.reduce(
+    (accumulator, point) => ({
+      x: accumulator.x + point.x,
+      y: accumulator.y + point.y,
+    }),
+    { x: 0, y: 0 }
+  );
+
+  return {
+    x: total.x / points.length,
+    y: total.y / points.length,
+  };
+};
+
+const createPhotoPillowFace = ({
+  points,
+  outline,
   texture,
-  aspectRatio,
   direction,
 }: {
+  points: OutlinePoint[];
+  outline: DetectedOutline;
   texture: THREE.Texture;
-  aspectRatio: number;
   direction: 1 | -1;
 }) => {
-  const width = PLUSH_WIDTH;
-  const height = PLUSH_WIDTH / aspectRatio;
-  const geometry = new THREE.PlaneGeometry(width, height, SURFACE_SEGMENTS, SURFACE_SEGMENTS);
-  puffPlaneGeometry(geometry, direction);
+  const center = findCenter(points);
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  const sourceMaxDimension = Math.max(outline.imageWidth, outline.imageHeight);
+
+  for (let ring = 0; ring <= RING_COUNT; ring += 1) {
+    const t = ring / RING_COUNT;
+    const puff = PUFF_AMOUNT * (1 - t * t);
+
+    points.forEach((edgePoint) => {
+      const x = center.x + (edgePoint.x - center.x) * t;
+      const y = center.y + (edgePoint.y - center.y) * t;
+      const z = direction * puff;
+      const sourceX = outline.imageWidth / 2 + (x / PLUSH_WIDTH) * sourceMaxDimension;
+      const sourceY = outline.imageHeight / 2 - (y / PLUSH_WIDTH) * sourceMaxDimension;
+
+      positions.push(x, y, z);
+      uvs.push(sourceX / outline.imageWidth, sourceY / outline.imageHeight);
+    });
+  }
+
+  const pointsPerRing = points.length;
+
+  for (let ring = 0; ring < RING_COUNT; ring += 1) {
+    for (let index = 0; index < pointsPerRing; index += 1) {
+      const nextIndex = (index + 1) % pointsPerRing;
+      const current = ring * pointsPerRing + index;
+      const next = ring * pointsPerRing + nextIndex;
+      const outerCurrent = (ring + 1) * pointsPerRing + index;
+      const outerNext = (ring + 1) * pointsPerRing + nextIndex;
+
+      if (direction === 1) {
+        indices.push(current, outerCurrent, next, next, outerCurrent, outerNext);
+      } else {
+        indices.push(current, next, outerCurrent, next, outerNext, outerCurrent);
+      }
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
 
   const material = new THREE.MeshBasicMaterial({
     map: texture,
@@ -80,10 +135,10 @@ const createPuffedPhotoSurface = ({
 const createPlushMesh = (imageUri: string, outline: DetectedOutline) => {
   const group = new THREE.Group();
   const texture = createTexture(imageUri);
-  const aspectRatio = outline.imageWidth / outline.imageHeight;
+  const points = normalizeOutlinePoints(outline);
 
-  const frontMesh = createPuffedPhotoSurface({ texture, aspectRatio, direction: 1 });
-  const backMesh = createPuffedPhotoSurface({ texture, aspectRatio, direction: -1 });
+  const frontMesh = createPhotoPillowFace({ points, outline, texture, direction: 1 });
+  const backMesh = createPhotoPillowFace({ points, outline, texture, direction: -1 });
 
   group.add(frontMesh, backMesh);
   group.rotation.x = -0.1;
