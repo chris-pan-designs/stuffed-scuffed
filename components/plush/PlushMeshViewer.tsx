@@ -81,7 +81,9 @@ type PlushHitMask = {
   cells: boolean[][];
   centerCol: number;
   centerRow: number;
+  collisionCells: boolean[][];
   collisionPoints: THREE.Vector3[];
+  collisionSampleSpacing: number;
   cols: number;
   rows: number;
   scaledHeight: number;
@@ -93,6 +95,7 @@ type MaskGrid = {
   cols: number;
   rows: number;
   cells: boolean[][];
+  collisionCells: boolean[][];
   distances: number[][];
   aspectRatio: number;
   visibleBounds: VisibleBounds;
@@ -106,9 +109,10 @@ type VisibleBounds = {
 };
 
 const ALPHA_THRESHOLD = 24;
+const COLLISION_ALPHA_THRESHOLD = 96;
 const MAX_GRID_SIZE = 132;
 const PLUSH_WIDTH = 3.1;
-const PLUSH_TARGET_SIZE = 1.35;
+const PLUSH_TARGET_SIZE = 1.08;
 const PUFF_AMOUNT = 0.2;
 const EDGE_VOLUME_AMOUNT = 0.075;
 const FLAT_EDGE_BAND = 0.055;
@@ -133,13 +137,17 @@ const PHYSICS_HANG_TORQUE = 18;
 const PHYSICS_HANG_DAMPING = 0.975;
 const PHYSICS_FLOOR_TOPPLE_TORQUE = 4.8;
 const PHYSICS_PLUSH_COLLISION_BOUNCE = 0.24;
-const PHYSICS_PLUSH_COLLISION_PUSH = 0.52;
+const PHYSICS_PLUSH_COLLISION_PUSH = 0.42;
 const PHYSICS_PLUSH_COLLISION_RADIUS_SCALE = 0.86;
 const PHYSICS_PLUSH_RESTING_CONTACT_SPEED = 0.45;
-const PHYSICS_PLUSH_CONTACT_DAMPING = 0.72;
+const PHYSICS_PLUSH_CONTACT_DAMPING = 0.52;
+const PHYSICS_PLUSH_RESTING_OVERLAP_ALLOWANCE = 1;
+const PHYSICS_PLUSH_MAX_MASK_PUSH = 0.022;
+const PHYSICS_PLUSH_RESTING_POSITION_CORRECTION = 0.7;
 const PLUSH_DEPTH_SPACING = 0.045;
 const PLUSH_MAX_DEPTH = 0.14;
-const MAX_COLLISION_SAMPLE_POINTS = 120;
+const MAX_COLLISION_SAMPLE_POINTS = 520;
+const PHYSICS_SCREEN_COLLISION_CELL_SIZE = 0.035;
 
 const plushSoftnessTuning = {
   impactSquashAmount: 0.08,
@@ -292,17 +300,20 @@ const createMaskGrid = (imageUri: string): MaskGrid => {
   const cols = aspectRatio >= 1 ? MAX_GRID_SIZE : Math.max(18, Math.round(MAX_GRID_SIZE * aspectRatio));
   const rows = aspectRatio >= 1 ? Math.max(18, Math.round(MAX_GRID_SIZE / aspectRatio)) : MAX_GRID_SIZE;
   const cells = Array.from({ length: rows }, () => Array.from({ length: cols }, () => false));
+  const collisionCells = Array.from({ length: rows }, () => Array.from({ length: cols }, () => false));
 
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
-      cells[row][col] = sampleCellAlpha(png, row, col, rows, cols) > ALPHA_THRESHOLD;
+      const alpha = sampleCellAlpha(png, row, col, rows, cols);
+      cells[row][col] = alpha > ALPHA_THRESHOLD;
+      collisionCells[row][col] = alpha > COLLISION_ALPHA_THRESHOLD;
     }
   }
 
   const distances = computeCellDistances(cells);
   const visibleBounds = findVisibleBounds(cells);
 
-  return { png, cols, rows, cells, distances, aspectRatio, visibleBounds };
+  return { png, cols, rows, cells, collisionCells, distances, aspectRatio, visibleBounds };
 };
 
 const isInside = (cells: boolean[][], row: number, col: number) =>
@@ -595,27 +606,30 @@ const createSideGeometry = (grid: MaskGrid) => {
   return geometry;
 };
 
-const createCollisionSamplePoints = (grid: MaskGrid) => {
+const createCollisionSamples = (grid: MaskGrid) => {
   const pointFor = createGridProjector(grid);
-  const boundaryCells: { row: number; col: number }[] = [];
+  const solidCells: { row: number; col: number }[] = [];
 
   for (let row = 0; row < grid.rows; row += 1) {
     for (let col = 0; col < grid.cols; col += 1) {
-      if (isBoundaryCell(grid.cells, row, col)) {
-        boundaryCells.push({ row, col });
+      if (grid.collisionCells[row][col]) {
+        solidCells.push({ row, col });
       }
     }
   }
 
-  const step = Math.max(1, Math.ceil(boundaryCells.length / MAX_COLLISION_SAMPLE_POINTS));
+  const step = Math.max(1, Math.ceil(solidCells.length / MAX_COLLISION_SAMPLE_POINTS));
   const points: THREE.Vector3[] = [];
 
-  for (let index = 0; index < boundaryCells.length; index += step) {
-    const cell = boundaryCells[index];
+  for (let index = 0; index < solidCells.length; index += step) {
+    const cell = solidCells[index];
     points.push(pointFor(cell.row + 0.5, cell.col + 0.5, 0));
   }
 
-  return points;
+  return {
+    points,
+    spacing: Math.max(1, step),
+  };
 };
 
 const createPlushMesh = (imageUri: string) => {
@@ -624,6 +638,7 @@ const createPlushMesh = (imageUri: string) => {
   const texture = createTexture(imageUri);
   const grid = createMaskGrid(imageUri);
   const gridMetrics = createGridMetrics(grid);
+  const collisionSamples = createCollisionSamples(grid);
   const photoMaterial = new THREE.MeshBasicMaterial({
     map: texture,
     transparent: true,
@@ -650,7 +665,9 @@ const createPlushMesh = (imageUri: string) => {
     cells: grid.cells,
     centerCol: gridMetrics.centerCol,
     centerRow: gridMetrics.centerRow,
-    collisionPoints: createCollisionSamplePoints(grid),
+    collisionCells: grid.collisionCells,
+    collisionPoints: collisionSamples.points,
+    collisionSampleSpacing: collisionSamples.spacing,
     cols: grid.cols,
     rows: grid.rows,
     scaledHeight: gridMetrics.scaledHeight,
@@ -679,6 +696,28 @@ const getRotatedHalfExtents = (physics: PhysicsState, rotationZ: number) => {
   return {
     x: physics.halfWidth * cos + physics.halfHeight * sin,
     y: physics.halfWidth * sin + physics.halfHeight * cos,
+  };
+};
+
+const getProjectedHalfExtents = (mesh: THREE.Group, physics: PhysicsState) => {
+  const hitMask = mesh.userData.hitMask as PlushHitMask | undefined;
+
+  if (!hitMask || hitMask.collisionPoints.length === 0) {
+    return getRotatedHalfExtents(physics, mesh.rotation.z);
+  }
+
+  let maxX = 0;
+  let maxY = 0;
+
+  for (const point of hitMask.collisionPoints) {
+    const projectedPoint = point.clone().applyQuaternion(mesh.quaternion);
+    maxX = Math.max(maxX, Math.abs(projectedPoint.x));
+    maxY = Math.max(maxY, Math.abs(projectedPoint.y));
+  }
+
+  return {
+    x: Math.max(maxX, 0.001),
+    y: Math.max(maxY, 0.001),
   };
 };
 
@@ -712,8 +751,8 @@ const createSoftnessState = (): PlushSoftnessState => ({
   wobbleVelocity: 0,
 });
 
-const clampPlushToBounds = (physics: PhysicsState, state: SceneState, rotationZ = 0) => {
-  const halfExtents = getRotatedHalfExtents(physics, rotationZ);
+const clampPlushToBounds = (mesh: THREE.Group, physics: PhysicsState, state: SceneState) => {
+  const halfExtents = getProjectedHalfExtents(mesh, physics);
   const maxX = Math.max(0, state.viewportWorldWidth / 2 - halfExtents.x);
   const maxY = Math.max(0, state.viewportWorldHeight / 2 - halfExtents.y);
   let isTouchingFloor = false;
@@ -1025,7 +1064,7 @@ const applyPhysicsFrame = (
     applyAngularVelocity(mesh, physics.angularVelocity, deltaSeconds);
     physics.angularVelocity.multiplyScalar(PHYSICS_ANGULAR_DAMPING);
 
-    const { impacts, isTouchingFloor } = clampPlushToBounds(physics, state, mesh.rotation.z);
+    const { impacts, isTouchingFloor } = clampPlushToBounds(mesh, physics, state);
 
     impacts.forEach((impact) => registerPlushImpact(mesh, softness, impact));
 
@@ -1054,51 +1093,118 @@ const applyPhysicsFrame = (
   mesh.position.copy(physics.position);
 };
 
-const isLocalPointInsideHitMask = (localPoint: THREE.Vector3, hitMask: PlushHitMask) => {
-  const gridCol = Math.floor((localPoint.x / hitMask.scaledWidth) * hitMask.cols + hitMask.centerCol);
-  const gridRow = Math.floor(hitMask.centerRow - (localPoint.y / hitMask.scaledHeight) * hitMask.rows);
+type MaskOverlap = {
+  count: number;
+  normal: THREE.Vector2;
+};
 
-  return (
-    gridRow >= 0 &&
-    gridRow < hitMask.rows &&
-    gridCol >= 0 &&
-    gridCol < hitMask.cols &&
-    hitMask.cells[gridRow][gridCol]
-  );
+type ProjectedCollisionPoint = {
+  x: number;
+  y: number;
 };
 
 const getScreenWorldPoint = (runtime: PlushRuntime, localPoint: THREE.Vector3) =>
   localPoint
     .clone()
-    .applyAxisAngle(new THREE.Vector3(0, 0, 1), runtime.mesh.rotation.z)
+    .applyQuaternion(runtime.mesh.quaternion)
     .add(runtime.physics.position);
 
-const getScreenLocalPoint = (runtime: PlushRuntime, worldPoint: THREE.Vector3) =>
-  worldPoint
-    .clone()
-    .sub(runtime.physics.position)
-    .applyAxisAngle(new THREE.Vector3(0, 0, 1), -runtime.mesh.rotation.z);
+const getProjectedCollisionPoints = (runtime: PlushRuntime) => {
+  const hitMask = runtime.mesh.userData.hitMask as PlushHitMask | undefined;
 
-const getMaskOverlapCount = (source: PlushRuntime, target: PlushRuntime) => {
-  const sourceHitMask = source.mesh.userData.hitMask as PlushHitMask | undefined;
-  const targetHitMask = target.mesh.userData.hitMask as PlushHitMask | undefined;
-
-  if (!sourceHitMask || !targetHitMask) {
-    return 0;
+  if (!hitMask) {
+    return [];
   }
 
-  let overlapCount = 0;
+  return hitMask.collisionPoints.map((samplePoint) => {
+    const worldPoint = getScreenWorldPoint(runtime, samplePoint);
+    return { x: worldPoint.x, y: worldPoint.y };
+  });
+};
 
-  for (const samplePoint of sourceHitMask.collisionPoints) {
-    const worldPoint = getScreenWorldPoint(source, samplePoint);
-    const targetLocalPoint = getScreenLocalPoint(target, worldPoint);
+const getCollisionCellKey = (x: number, y: number) =>
+  `${Math.floor(x / PHYSICS_SCREEN_COLLISION_CELL_SIZE)},${Math.floor(y / PHYSICS_SCREEN_COLLISION_CELL_SIZE)}`;
 
-    if (isLocalPointInsideHitMask(targetLocalPoint, targetHitMask)) {
-      overlapCount += 1;
+const createProjectedPointGrid = (points: ProjectedCollisionPoint[]) => {
+  const grid = new Map<string, ProjectedCollisionPoint[]>();
+
+  points.forEach((point) => {
+    const key = getCollisionCellKey(point.x, point.y);
+    const cellPoints = grid.get(key);
+
+    if (cellPoints) {
+      cellPoints.push(point);
+    } else {
+      grid.set(key, [point]);
+    }
+  });
+
+  return grid;
+};
+
+const hasNearbyProjectedPoint = (
+  point: ProjectedCollisionPoint,
+  targetGrid: Map<string, ProjectedCollisionPoint[]>
+) => {
+  const cellX = Math.floor(point.x / PHYSICS_SCREEN_COLLISION_CELL_SIZE);
+  const cellY = Math.floor(point.y / PHYSICS_SCREEN_COLLISION_CELL_SIZE);
+  const maxDistanceSq = PHYSICS_SCREEN_COLLISION_CELL_SIZE * PHYSICS_SCREEN_COLLISION_CELL_SIZE;
+
+  for (let yOffset = -1; yOffset <= 1; yOffset += 1) {
+    for (let xOffset = -1; xOffset <= 1; xOffset += 1) {
+      const cellPoints = targetGrid.get(`${cellX + xOffset},${cellY + yOffset}`);
+
+      if (!cellPoints) {
+        continue;
+      }
+
+      for (const targetPoint of cellPoints) {
+        const dx = point.x - targetPoint.x;
+        const dy = point.y - targetPoint.y;
+
+        if (dx * dx + dy * dy <= maxDistanceSq) {
+          return true;
+        }
+      }
     }
   }
 
-  return overlapCount;
+  return false;
+};
+
+const getMaskOverlap = (
+  source: PlushRuntime,
+  target: PlushRuntime,
+  sourcePoints: ProjectedCollisionPoint[],
+  targetGrid: Map<string, ProjectedCollisionPoint[]>
+): MaskOverlap => {
+  const sourceHitMask = source.mesh.userData.hitMask as PlushHitMask | undefined;
+
+  if (!sourceHitMask) {
+    return { count: 0, normal: new THREE.Vector2() };
+  }
+
+  let overlapCount = 0;
+  const overlapCenter = new THREE.Vector2();
+
+  for (const point of sourcePoints) {
+    if (hasNearbyProjectedPoint(point, targetGrid)) {
+      overlapCount += 1;
+      overlapCenter.x += point.x;
+      overlapCenter.y += point.y;
+    }
+  }
+
+  if (overlapCount === 0) {
+    return { count: 0, normal: new THREE.Vector2() };
+  }
+
+  overlapCenter.multiplyScalar(1 / overlapCount);
+
+  return {
+    count: overlapCount * sourceHitMask.collisionSampleSpacing,
+    normal: new THREE.Vector2(overlapCenter.x - target.physics.position.x, overlapCenter.y - target.physics.position.y),
+  };
 };
 
 const resolvePlushCollision = (a: PlushRuntime, b: PlushRuntime) => {
@@ -1115,41 +1221,62 @@ const resolvePlushCollision = (a: PlushRuntime, b: PlushRuntime) => {
     return;
   }
 
-  const overlapCount = getMaskOverlapCount(a, b) + getMaskOverlapCount(b, a);
+  const aPoints = getProjectedCollisionPoints(a);
+  const bPoints = getProjectedCollisionPoints(b);
+  const aGrid = createProjectedPointGrid(aPoints);
+  const bGrid = createProjectedPointGrid(bPoints);
+  const aIntoB = getMaskOverlap(a, b, aPoints, bGrid);
+  const bIntoA = getMaskOverlap(b, a, bPoints, aGrid);
+  const overlapCount = aIntoB.count + bIntoA.count;
 
   if (overlapCount === 0) {
     return;
   }
 
-  const normal = delta.multiplyScalar(1 / distance);
-  const overlap = Math.min(0.12, Math.max(0.018, (minDistance - distance) * 0.16 + overlapCount * 0.0008));
-  const correction = normal.clone().multiplyScalar(overlap * PHYSICS_PLUSH_COLLISION_PUSH);
-
-  if (!a.physics.dragging) {
-    a.physics.position.x -= correction.x * 0.5;
-    a.physics.position.y -= correction.y * 0.5;
-  }
-
-  if (!b.physics.dragging) {
-    b.physics.position.x += correction.x * 0.5;
-    b.physics.position.y += correction.y * 0.5;
-  }
-
-  a.physics.position.z = a.depthZ;
-  b.physics.position.z = b.depthZ;
-
+  const overlapNormal = bIntoA.normal.clone().sub(aIntoB.normal);
+  const normal = overlapNormal.lengthSq() > 0.0001 ? overlapNormal.normalize() : delta.multiplyScalar(1 / distance);
   const relativeVelocity = new THREE.Vector2(
     b.physics.velocity.x - a.physics.velocity.x,
     b.physics.velocity.y - a.physics.velocity.y
   );
   const separatingSpeed = relativeVelocity.dot(normal);
   const contactSpeed = Math.abs(separatingSpeed);
+  const maskOverlap = Math.max(0, overlapCount - PHYSICS_PLUSH_RESTING_OVERLAP_ALLOWANCE);
+  const overlap = Math.min(PHYSICS_PLUSH_MAX_MASK_PUSH, maskOverlap * 0.0012);
+  const correction = normal.clone().multiplyScalar(overlap * PHYSICS_PLUSH_COLLISION_PUSH);
+
+  a.physics.position.z = a.depthZ;
+  b.physics.position.z = b.depthZ;
 
   if (separatingSpeed > 0) {
     return;
   }
 
   if (contactSpeed < PHYSICS_PLUSH_RESTING_CONTACT_SPEED) {
+    const restingCorrection = correction.clone().multiplyScalar(PHYSICS_PLUSH_RESTING_POSITION_CORRECTION);
+
+    if (overlap > 0) {
+      if (!a.physics.dragging) {
+        a.physics.position.x -= restingCorrection.x * 0.5;
+        a.physics.position.y -= restingCorrection.y * 0.5;
+      }
+
+      if (!b.physics.dragging) {
+        b.physics.position.x += restingCorrection.x * 0.5;
+        b.physics.position.y += restingCorrection.y * 0.5;
+      }
+    }
+
+    if (!a.physics.dragging) {
+      a.physics.velocity.x += normal.x * separatingSpeed * 0.5;
+      a.physics.velocity.y += normal.y * separatingSpeed * 0.5;
+    }
+
+    if (!b.physics.dragging) {
+      b.physics.velocity.x -= normal.x * separatingSpeed * 0.5;
+      b.physics.velocity.y -= normal.y * separatingSpeed * 0.5;
+    }
+
     if (!a.physics.dragging) {
       a.physics.velocity.multiplyScalar(PHYSICS_PLUSH_CONTACT_DAMPING);
       a.physics.angularVelocity.multiplyScalar(PHYSICS_PLUSH_CONTACT_DAMPING);
@@ -1161,6 +1288,18 @@ const resolvePlushCollision = (a: PlushRuntime, b: PlushRuntime) => {
     }
 
     return;
+  }
+
+  if (overlap > 0) {
+    if (!a.physics.dragging) {
+      a.physics.position.x -= correction.x * 0.5;
+      a.physics.position.y -= correction.y * 0.5;
+    }
+
+    if (!b.physics.dragging) {
+      b.physics.position.x += correction.x * 0.5;
+      b.physics.position.y += correction.y * 0.5;
+    }
   }
 
   const impulseStrength = -(1 + PHYSICS_PLUSH_COLLISION_BOUNCE) * separatingSpeed * 0.5;
@@ -1205,7 +1344,7 @@ const resolvePlushCollisions = (runtimes: PlushRuntime[]) => {
 
 const settleRestingPlushes = (runtimes: PlushRuntime[], state: SceneState) => {
   runtimes.forEach((runtime) => {
-    const halfExtents = getRotatedHalfExtents(runtime.physics, runtime.mesh.rotation.z);
+    const halfExtents = getProjectedHalfExtents(runtime.mesh, runtime.physics);
     const floorY = -(state.viewportWorldHeight / 2 - halfExtents.y);
     const isOnFloor = runtime.physics.position.y <= floorY + 0.012;
 
@@ -1234,7 +1373,7 @@ const createPlushRuntime = (
   physics.halfHeight = mesh.userData.physicsHalfHeight ?? PLUSH_TARGET_SIZE / 2;
   resetPlushSoftness(mesh, softness);
 
-  const startHalfExtents = getRotatedHalfExtents(physics, mesh.rotation.z);
+  const startHalfExtents = getProjectedHalfExtents(mesh, physics);
   const startX = (index - (totalCount - 1) / 2) * PLUSH_TARGET_SIZE * 0.74;
   const startY = Math.max(0, state.viewportWorldHeight / 2 - startHalfExtents.y);
   physics.position.set(startX, physicsEnabled ? startY : 0, depthZ);
@@ -1262,10 +1401,12 @@ const isTouchOnPlush = (
       continue;
     }
 
-    const localPoint = touchPoint
-      .clone()
+    const runtimeTouchPoint = touchPoint.clone();
+    runtimeTouchPoint.z = runtime.depthZ;
+
+    const localPoint = runtimeTouchPoint
       .sub(physics.position)
-      .applyAxisAngle(new THREE.Vector3(0, 0, 1), -mesh.rotation.z);
+      .applyQuaternion(mesh.quaternion.clone().invert());
 
     const gridCol = Math.floor((localPoint.x / hitMask.scaledWidth) * hitMask.cols + hitMask.centerCol);
     const gridRow = Math.floor(hitMask.centerRow - (localPoint.y / hitMask.scaledHeight) * hitMask.rows);
@@ -1448,7 +1589,7 @@ export function PlushMeshViewer({ plushes, physicsEnabled = false }: PlushMeshVi
 
   useEffect(() => {
     runtimesRef.current.forEach((runtime, index) => {
-      const startHalfExtents = getRotatedHalfExtents(runtime.physics, runtime.mesh.rotation.z);
+      const startHalfExtents = getProjectedHalfExtents(runtime.mesh, runtime.physics);
       const startX = (index - (runtimesRef.current.length - 1) / 2) * PLUSH_TARGET_SIZE * 0.74;
       const startY = Math.max(0, stateRef.current.viewportWorldHeight / 2 - startHalfExtents.y);
       runtime.physics.dragging = false;
