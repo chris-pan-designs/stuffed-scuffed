@@ -4,7 +4,7 @@ import { GLView, type ExpoWebGLRenderingContext } from 'expo-gl';
 import { Renderer, TextureLoader } from 'expo-three';
 import * as THREE from 'three';
 
-import type { DetectedOutline } from '@/lib/outlineDetection';
+import type { DetectedOutline, OutlinePoint } from '@/lib/outlineDetection';
 
 type PlushMeshViewerProps = {
   imageUri: string;
@@ -21,6 +21,7 @@ const SURFACE_SEGMENTS = 92;
 const PLUSH_WIDTH = 3.1;
 const PLUSH_THICKNESS = 0.22;
 const PUFF_AMOUNT = 0.42;
+const PERIMETER_SEGMENT_LIMIT = 220;
 
 const createTexture = (imageUri: string) => {
   const texture = new TextureLoader().load(imageUri);
@@ -54,6 +55,80 @@ const puffPlaneGeometry = (geometry: THREE.PlaneGeometry, direction: 1 | -1) => 
   geometry.computeVertexNormals();
 };
 
+const normalizeOutlinePoints = (outline: DetectedOutline) => {
+  const sourceMaxDimension = Math.max(outline.imageWidth, outline.imageHeight);
+  const centerX = outline.imageWidth / 2;
+  const centerY = outline.imageHeight / 2;
+  const aspectRatio = outline.imageWidth / outline.imageHeight;
+  const width = PLUSH_WIDTH;
+  const height = PLUSH_WIDTH / aspectRatio;
+
+  return outline.points.map((point) => ({
+    x: ((point.x - centerX) / sourceMaxDimension) * PLUSH_WIDTH,
+    y: -((point.y - centerY) / sourceMaxDimension) * PLUSH_WIDTH,
+  })).map((point) => ({
+    x: Math.max(-width / 2, Math.min(width / 2, point.x)),
+    y: Math.max(-height / 2, Math.min(height / 2, point.y)),
+  }));
+};
+
+const limitPerimeterPoints = (points: OutlinePoint[]) => {
+  const step = Math.max(1, Math.ceil(points.length / PERIMETER_SEGMENT_LIMIT));
+  return points.filter((_, index) => index % step === 0);
+};
+
+const getPuffZAtPoint = (point: OutlinePoint, aspectRatio: number, direction: 1 | -1) => {
+  const width = PLUSH_WIDTH;
+  const height = PLUSH_WIDTH / aspectRatio;
+  const normalizedX = Math.abs(point.x) / (width / 2);
+  const normalizedY = Math.abs(point.y) / (height / 2);
+  const distance = Math.min(1, Math.hypot(normalizedX * 0.82, normalizedY * 0.82));
+  const centerPuff = Math.max(0, 1 - distance * distance);
+
+  return direction * (PLUSH_THICKNESS / 2 + PUFF_AMOUNT * centerPuff);
+};
+
+const createPerimeterConnector = (outline: DetectedOutline, aspectRatio: number) => {
+  const points = limitPerimeterPoints(normalizeOutlinePoints(outline));
+  const geometry = new THREE.BufferGeometry();
+  const positions: number[] = [];
+  const indices: number[] = [];
+
+  points.forEach((point) => {
+    positions.push(
+      point.x,
+      point.y,
+      getPuffZAtPoint(point, aspectRatio, 1),
+      point.x,
+      point.y,
+      getPuffZAtPoint(point, aspectRatio, -1)
+    );
+  });
+
+  points.forEach((_, index) => {
+    const nextIndex = (index + 1) % points.length;
+    const frontCurrent = index * 2;
+    const backCurrent = frontCurrent + 1;
+    const frontNext = nextIndex * 2;
+    const backNext = frontNext + 1;
+
+    indices.push(frontCurrent, backCurrent, frontNext, backCurrent, backNext, frontNext);
+  });
+
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+
+  const material = new THREE.MeshStandardMaterial({
+    color: '#e9e4dd',
+    roughness: 1,
+    metalness: 0,
+    side: THREE.DoubleSide,
+  });
+
+  return new THREE.Mesh(geometry, material);
+};
+
 const createPuffedPhotoSurface = ({
   texture,
   aspectRatio,
@@ -85,8 +160,9 @@ const createPlushMesh = (imageUri: string, outline: DetectedOutline) => {
 
   const frontMesh = createPuffedPhotoSurface({ texture, aspectRatio, direction: 1 });
   const backMesh = createPuffedPhotoSurface({ texture, aspectRatio, direction: -1 });
+  const perimeterConnector = createPerimeterConnector(outline, aspectRatio);
 
-  group.add(frontMesh, backMesh);
+  group.add(perimeterConnector, frontMesh, backMesh);
   group.rotation.x = -0.1;
   group.rotation.y = -0.25;
 
@@ -142,6 +218,11 @@ export function PlushMeshViewer({ imageUri, outline }: PlushMeshViewerProps) {
       100
     );
     camera.position.set(0, 0, 5.8);
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 2.2);
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.3);
+    keyLight.position.set(2, 3, 4);
+    scene.add(ambientLight, keyLight);
 
     const mesh = createPlushMesh(imageUri, outline);
     scene.add(mesh);
