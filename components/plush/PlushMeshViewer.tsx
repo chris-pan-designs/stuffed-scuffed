@@ -144,6 +144,7 @@ const computeCellDistances = (cells: boolean[][]) => {
 
 const getVertexDistance = (grid: MaskGrid, gridRow: number, gridCol: number) => {
   const values: number[] = [];
+  let touchesTransparentSpace = false;
 
   for (let rowOffset = -1; rowOffset <= 0; rowOffset += 1) {
     for (let colOffset = -1; colOffset <= 0; colOffset += 1) {
@@ -152,12 +153,18 @@ const getVertexDistance = (grid: MaskGrid, gridRow: number, gridCol: number) => 
 
       if (isInside(grid.cells, row, col)) {
         values.push(grid.distances[row][col]);
+      } else {
+        touchesTransparentSpace = true;
       }
     }
   }
 
   if (values.length === 0) {
     return 0;
+  }
+
+  if (touchesTransparentSpace) {
+    return 1;
   }
 
   return values.reduce((sum, value) => sum + value, 0) / values.length;
