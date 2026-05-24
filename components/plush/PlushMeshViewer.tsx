@@ -1,11 +1,12 @@
+import { Buffer } from 'buffer';
 import { useEffect, useMemo, useRef } from 'react';
 import { PanResponder, StyleSheet, View } from 'react-native';
 import { GLView, type ExpoWebGLRenderingContext } from 'expo-gl';
 import { Renderer, TextureLoader } from 'expo-three';
-import earcut from 'earcut';
+import { PNG } from 'pngjs/browser';
 import * as THREE from 'three';
 
-import type { DetectedOutline, OutlinePoint } from '@/lib/outlineDetection';
+import type { DetectedOutline } from '@/lib/outlineDetection';
 
 type PlushMeshViewerProps = {
   imageUri: string;
@@ -18,12 +19,19 @@ type SceneState = {
   renderer: THREE.WebGLRenderer | null;
 };
 
+type MaskGrid = {
+  cols: number;
+  rows: number;
+  cells: boolean[][];
+  distances: number[][];
+  aspectRatio: number;
+};
+
+const ALPHA_THRESHOLD = 24;
+const MAX_GRID_SIZE = 88;
 const PLUSH_WIDTH = 3.1;
-const PUFF_AMOUNT = 0.28;
-const EDGE_THICKNESS = 0.04;
-const MAX_OUTLINE_POINTS = 44;
-const BLOB_SMOOTHING_PASSES = 8;
-const BLOB_INFLATE = 1.08;
+const PUFF_AMOUNT = 0.34;
+const SIDE_THICKNESS = 0.05;
 
 const createTexture = (imageUri: string) => {
   const texture = new TextureLoader().load(imageUri);
@@ -37,95 +45,166 @@ const createTexture = (imageUri: string) => {
   return texture;
 };
 
-const limitOutlinePoints = (points: OutlinePoint[]) => {
-  const step = Math.max(1, Math.ceil(points.length / MAX_OUTLINE_POINTS));
-  return points.filter((_, index) => index % step === 0);
-};
+const getBase64FromDataUri = (dataUri: string) => {
+  const marker = 'base64,';
+  const markerIndex = dataUri.indexOf(marker);
 
-const smoothBlobPoints = (points: OutlinePoint[]) => {
-  let smoothedPoints = points;
-
-  for (let pass = 0; pass < BLOB_SMOOTHING_PASSES; pass += 1) {
-    smoothedPoints = smoothedPoints.map((point, index) => {
-      const previous = smoothedPoints[(index - 1 + smoothedPoints.length) % smoothedPoints.length];
-      const next = smoothedPoints[(index + 1) % smoothedPoints.length];
-
-      return {
-        x: previous.x * 0.25 + point.x * 0.5 + next.x * 0.25,
-        y: previous.y * 0.25 + point.y * 0.5 + next.y * 0.25,
-      };
-    });
+  if (markerIndex === -1) {
+    throw new Error('Expected a base64 PNG data URI for plush mesh generation.');
   }
 
-  const center = findCenter(smoothedPoints);
-
-  return smoothedPoints.map((point) => ({
-    x: center.x + (point.x - center.x) * BLOB_INFLATE,
-    y: center.y + (point.y - center.y) * BLOB_INFLATE,
-  }));
+  return dataUri.slice(markerIndex + marker.length);
 };
 
-const normalizeOutlinePoints = (outline: DetectedOutline) => {
-  const sourceMaxDimension = Math.max(outline.imageWidth, outline.imageHeight);
-  const centerX = outline.imageWidth / 2;
-  const centerY = outline.imageHeight / 2;
+const getAlphaAt = (png: PNG, x: number, y: number) => {
+  const clampedX = Math.max(0, Math.min(png.width - 1, x));
+  const clampedY = Math.max(0, Math.min(png.height - 1, y));
+  const pixelIndex = (png.width * clampedY + clampedX) << 2;
 
-  const normalizedPoints = limitOutlinePoints(outline.points).map((point) => ({
-    x: ((point.x - centerX) / sourceMaxDimension) * PLUSH_WIDTH,
-    y: -((point.y - centerY) / sourceMaxDimension) * PLUSH_WIDTH,
-  }));
-
-  return smoothBlobPoints(normalizedPoints);
+  return png.data[pixelIndex + 3];
 };
 
-const findCenter = (points: OutlinePoint[]) => {
-  const total = points.reduce(
-    (accumulator, point) => ({
-      x: accumulator.x + point.x,
-      y: accumulator.y + point.y,
-    }),
-    { x: 0, y: 0 }
+const createMaskGrid = (imageUri: string): MaskGrid => {
+  const png = PNG.sync.read(Buffer.from(getBase64FromDataUri(imageUri), 'base64'));
+  const aspectRatio = png.width / png.height;
+  const cols = aspectRatio >= 1 ? MAX_GRID_SIZE : Math.max(18, Math.round(MAX_GRID_SIZE * aspectRatio));
+  const rows = aspectRatio >= 1 ? Math.max(18, Math.round(MAX_GRID_SIZE / aspectRatio)) : MAX_GRID_SIZE;
+  const cells = Array.from({ length: rows }, () => Array.from({ length: cols }, () => false));
+
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const sourceX = Math.floor(((col + 0.5) / cols) * png.width);
+      const sourceY = Math.floor(((row + 0.5) / rows) * png.height);
+      cells[row][col] = getAlphaAt(png, sourceX, sourceY) > ALPHA_THRESHOLD;
+    }
+  }
+
+  const distances = computeCellDistances(cells);
+
+  return { cols, rows, cells, distances, aspectRatio };
+};
+
+const isInside = (cells: boolean[][], row: number, col: number) =>
+  row >= 0 && row < cells.length && col >= 0 && col < cells[0].length && cells[row][col];
+
+const isBoundaryCell = (cells: boolean[][], row: number, col: number) => {
+  if (!isInside(cells, row, col)) {
+    return false;
+  }
+
+  return (
+    !isInside(cells, row - 1, col) ||
+    !isInside(cells, row + 1, col) ||
+    !isInside(cells, row, col - 1) ||
+    !isInside(cells, row, col + 1)
   );
-
-  return {
-    x: total.x / points.length,
-    y: total.y / points.length,
-  };
 };
 
-const getPuffForPoint = (point: OutlinePoint, center: OutlinePoint) => {
-  const distance = Math.hypot(point.x - center.x, point.y - center.y);
-  const normalizedDistance = Math.min(1, distance / (PLUSH_WIDTH * 0.48));
+const computeCellDistances = (cells: boolean[][]) => {
+  const rows = cells.length;
+  const cols = cells[0].length;
+  const distances = Array.from({ length: rows }, () => Array.from({ length: cols }, () => 0));
+  const queue: { row: number; col: number }[] = [];
 
-  return PUFF_AMOUNT * Math.max(0, 1 - normalizedDistance * normalizedDistance);
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      if (isBoundaryCell(cells, row, col)) {
+        distances[row][col] = 1;
+        queue.push({ row, col });
+      }
+    }
+  }
+
+  let cursor = 0;
+  const neighbors = [
+    { row: -1, col: 0 },
+    { row: 1, col: 0 },
+    { row: 0, col: -1 },
+    { row: 0, col: 1 },
+  ];
+
+  while (cursor < queue.length) {
+    const current = queue[cursor];
+    cursor += 1;
+
+    for (const neighbor of neighbors) {
+      const nextRow = current.row + neighbor.row;
+      const nextCol = current.col + neighbor.col;
+
+      if (isInside(cells, nextRow, nextCol) && distances[nextRow][nextCol] === 0) {
+        distances[nextRow][nextCol] = distances[current.row][current.col] + 1;
+        queue.push({ row: nextRow, col: nextCol });
+      }
+    }
+  }
+
+  return distances;
 };
 
-const createFaceGeometry = ({
-  points,
-  outline,
-  direction,
-}: {
-  points: OutlinePoint[];
-  outline: DetectedOutline;
-  direction: 1 | -1;
-}) => {
-  const center = findCenter(points);
-  const vertices = points.flatMap((point) => [point.x, point.y]);
-  const triangleIndices = earcut(vertices);
+const getVertexDistance = (grid: MaskGrid, gridRow: number, gridCol: number) => {
+  const values: number[] = [];
+
+  for (let rowOffset = -1; rowOffset <= 0; rowOffset += 1) {
+    for (let colOffset = -1; colOffset <= 0; colOffset += 1) {
+      const row = gridRow + rowOffset;
+      const col = gridCol + colOffset;
+
+      if (isInside(grid.cells, row, col)) {
+        values.push(grid.distances[row][col]);
+      }
+    }
+  }
+
+  if (values.length === 0) {
+    return 0;
+  }
+
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+};
+
+const createSurfaceGeometry = (grid: MaskGrid, direction: 1 | -1) => {
+  const width = PLUSH_WIDTH;
+  const height = PLUSH_WIDTH / grid.aspectRatio;
+  const maxDistance = Math.max(1, ...grid.distances.flat());
   const positions: number[] = [];
   const uvs: number[] = [];
-  const sourceMaxDimension = Math.max(outline.imageWidth, outline.imageHeight);
+  const indices: number[] = [];
 
-  points.forEach((point) => {
-    const z = direction * (EDGE_THICKNESS + getPuffForPoint(point, center));
-    const sourceX = outline.imageWidth / 2 + (point.x / PLUSH_WIDTH) * sourceMaxDimension;
-    const sourceY = outline.imageHeight / 2 - (point.y / PLUSH_WIDTH) * sourceMaxDimension;
+  for (let row = 0; row <= grid.rows; row += 1) {
+    for (let col = 0; col <= grid.cols; col += 1) {
+      const x = (col / grid.cols - 0.5) * width;
+      const y = (0.5 - row / grid.rows) * height;
+      const distance = getVertexDistance(grid, row, col);
+      const normalizedDistance = distance / maxDistance;
+      const puff = PUFF_AMOUNT * Math.sin(normalizedDistance * Math.PI * 0.5);
+      const z = direction * puff;
 
-    positions.push(point.x, point.y, z);
-    uvs.push(sourceX / outline.imageWidth, sourceY / outline.imageHeight);
-  });
+      positions.push(x, y, z);
+      uvs.push(col / grid.cols, row / grid.rows);
+    }
+  }
 
-  const indices = direction === 1 ? triangleIndices : [...triangleIndices].reverse();
+  const vertexIndex = (row: number, col: number) => row * (grid.cols + 1) + col;
+
+  for (let row = 0; row < grid.rows; row += 1) {
+    for (let col = 0; col < grid.cols; col += 1) {
+      if (!grid.cells[row][col]) {
+        continue;
+      }
+
+      const topLeft = vertexIndex(row, col);
+      const topRight = vertexIndex(row, col + 1);
+      const bottomLeft = vertexIndex(row + 1, col);
+      const bottomRight = vertexIndex(row + 1, col + 1);
+
+      if (direction === 1) {
+        indices.push(topLeft, bottomLeft, topRight, topRight, bottomLeft, bottomRight);
+      } else {
+        indices.push(topLeft, topRight, bottomLeft, topRight, bottomRight, bottomLeft);
+      }
+    }
+  }
+
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
@@ -135,23 +214,79 @@ const createFaceGeometry = ({
   return geometry;
 };
 
-const createEdgeGeometry = (points: OutlinePoint[]) => {
+const addSideQuad = (
+  positions: number[],
+  indices: number[],
+  a: THREE.Vector3,
+  b: THREE.Vector3,
+  c: THREE.Vector3,
+  d: THREE.Vector3
+) => {
+  const start = positions.length / 3;
+  positions.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, d.x, d.y, d.z);
+  indices.push(start, start + 1, start + 2, start + 1, start + 3, start + 2);
+};
+
+const createSideGeometry = (grid: MaskGrid) => {
+  const width = PLUSH_WIDTH;
+  const height = PLUSH_WIDTH / grid.aspectRatio;
   const positions: number[] = [];
   const indices: number[] = [];
 
-  points.forEach((point) => {
-    positions.push(point.x, point.y, EDGE_THICKNESS, point.x, point.y, -EDGE_THICKNESS);
-  });
+  const pointFor = (row: number, col: number, z: number) =>
+    new THREE.Vector3((col / grid.cols - 0.5) * width, (0.5 - row / grid.rows) * height, z);
 
-  points.forEach((_, index) => {
-    const nextIndex = (index + 1) % points.length;
-    const frontCurrent = index * 2;
-    const backCurrent = frontCurrent + 1;
-    const frontNext = nextIndex * 2;
-    const backNext = frontNext + 1;
+  for (let row = 0; row < grid.rows; row += 1) {
+    for (let col = 0; col < grid.cols; col += 1) {
+      if (!grid.cells[row][col]) {
+        continue;
+      }
 
-    indices.push(frontCurrent, backCurrent, frontNext, backCurrent, backNext, frontNext);
-  });
+      if (!isInside(grid.cells, row - 1, col)) {
+        addSideQuad(
+          positions,
+          indices,
+          pointFor(row, col, SIDE_THICKNESS),
+          pointFor(row, col + 1, SIDE_THICKNESS),
+          pointFor(row, col, -SIDE_THICKNESS),
+          pointFor(row, col + 1, -SIDE_THICKNESS)
+        );
+      }
+
+      if (!isInside(grid.cells, row + 1, col)) {
+        addSideQuad(
+          positions,
+          indices,
+          pointFor(row + 1, col + 1, SIDE_THICKNESS),
+          pointFor(row + 1, col, SIDE_THICKNESS),
+          pointFor(row + 1, col + 1, -SIDE_THICKNESS),
+          pointFor(row + 1, col, -SIDE_THICKNESS)
+        );
+      }
+
+      if (!isInside(grid.cells, row, col - 1)) {
+        addSideQuad(
+          positions,
+          indices,
+          pointFor(row + 1, col, SIDE_THICKNESS),
+          pointFor(row, col, SIDE_THICKNESS),
+          pointFor(row + 1, col, -SIDE_THICKNESS),
+          pointFor(row, col, -SIDE_THICKNESS)
+        );
+      }
+
+      if (!isInside(grid.cells, row, col + 1)) {
+        addSideQuad(
+          positions,
+          indices,
+          pointFor(row, col + 1, SIDE_THICKNESS),
+          pointFor(row + 1, col + 1, SIDE_THICKNESS),
+          pointFor(row, col + 1, -SIDE_THICKNESS),
+          pointFor(row + 1, col + 1, -SIDE_THICKNESS)
+        );
+      }
+    }
+  }
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
@@ -161,10 +296,10 @@ const createEdgeGeometry = (points: OutlinePoint[]) => {
   return geometry;
 };
 
-const createPlushMesh = (imageUri: string, outline: DetectedOutline) => {
+const createPlushMesh = (imageUri: string) => {
   const group = new THREE.Group();
   const texture = createTexture(imageUri);
-  const points = normalizeOutlinePoints(outline);
+  const grid = createMaskGrid(imageUri);
   const photoMaterial = new THREE.MeshBasicMaterial({
     map: texture,
     transparent: true,
@@ -172,26 +307,21 @@ const createPlushMesh = (imageUri: string, outline: DetectedOutline) => {
     side: THREE.DoubleSide,
   });
 
-  const frontMesh = new THREE.Mesh(createFaceGeometry({ points, outline, direction: 1 }), photoMaterial);
-  const backMesh = new THREE.Mesh(createFaceGeometry({ points, outline, direction: -1 }), photoMaterial);
-  const edgeMesh = new THREE.Mesh(
-    createEdgeGeometry(points),
-    new THREE.MeshBasicMaterial({
-      color: '#262321',
-      transparent: true,
-      opacity: 0.1,
-      side: THREE.DoubleSide,
-    })
+  const frontMesh = new THREE.Mesh(createSurfaceGeometry(grid, 1), photoMaterial);
+  const backMesh = new THREE.Mesh(createSurfaceGeometry(grid, -1), photoMaterial);
+  const sideMesh = new THREE.Mesh(
+    createSideGeometry(grid),
+    new THREE.MeshBasicMaterial({ color: '#ddd8d1', side: THREE.DoubleSide })
   );
 
-  group.add(edgeMesh, frontMesh, backMesh);
+  group.add(sideMesh, frontMesh, backMesh);
   group.rotation.x = -0.1;
   group.rotation.y = -0.25;
 
   return group;
 };
 
-export function PlushMeshViewer({ imageUri, outline }: PlushMeshViewerProps) {
+export function PlushMeshViewer({ imageUri }: PlushMeshViewerProps) {
   const stateRef = useRef<SceneState>({ animationFrame: null, mesh: null, renderer: null });
   const rotationRef = useRef({ x: -0.1, y: -0.25 });
 
@@ -241,7 +371,7 @@ export function PlushMeshViewer({ imageUri, outline }: PlushMeshViewerProps) {
     );
     camera.position.set(0, 0, 5.8);
 
-    const mesh = createPlushMesh(imageUri, outline);
+    const mesh = createPlushMesh(imageUri);
     scene.add(mesh);
 
     stateRef.current.renderer = renderer;
