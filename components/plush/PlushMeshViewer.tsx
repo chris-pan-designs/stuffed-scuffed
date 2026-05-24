@@ -180,7 +180,7 @@ const createSurfaceGeometry = (grid: MaskGrid, direction: 1 | -1) => {
       const z = direction * puff;
 
       positions.push(x, y, z);
-      uvs.push(col / grid.cols, row / grid.rows);
+      uvs.push(col / grid.cols, 1 - row / grid.rows);
     }
   }
 
