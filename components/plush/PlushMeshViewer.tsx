@@ -19,8 +19,8 @@ type SceneState = {
 
 const SURFACE_SEGMENTS = 92;
 const PLUSH_WIDTH = 3.1;
-const PLUSH_THICKNESS = 0.035;
-const PUFF_AMOUNT = 0.09;
+const PLUSH_THICKNESS = 0.004;
+const PUFF_AMOUNT = 0.035;
 
 const createTexture = (imageUri: string) => {
   const texture = new TextureLoader().load(imageUri);
@@ -44,7 +44,8 @@ const puffPlaneGeometry = (geometry: THREE.PlaneGeometry, direction: 1 | -1) => 
     const normalizedY = Math.abs(y) / (PLUSH_WIDTH / 2);
     const distance = Math.min(1, Math.hypot(normalizedX * 0.82, normalizedY * 0.82));
     const centerPuff = Math.max(0, 1 - distance * distance);
-    const z = direction * (PLUSH_THICKNESS / 2 + PUFF_AMOUNT * centerPuff);
+    const edgeBlend = Math.min(1, distance * distance);
+    const z = direction * (PLUSH_THICKNESS * edgeBlend + PUFF_AMOUNT * centerPuff);
 
     position.setZ(index, z);
   }
