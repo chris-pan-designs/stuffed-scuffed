@@ -20,6 +20,7 @@ type SceneState = {
 };
 
 type MaskGrid = {
+  png: PNG;
   cols: number;
   rows: number;
   cells: boolean[][];
@@ -81,7 +82,7 @@ const createMaskGrid = (imageUri: string): MaskGrid => {
 
   const distances = computeCellDistances(cells);
 
-  return { cols, rows, cells, distances, aspectRatio };
+  return { png, cols, rows, cells, distances, aspectRatio };
 };
 
 const isInside = (cells: boolean[][], row: number, col: number) =>
@@ -214,16 +215,44 @@ const createSurfaceGeometry = (grid: MaskGrid, direction: 1 | -1) => {
   return geometry;
 };
 
+const getColorAt = (png: PNG, x: number, y: number) => {
+  const clampedX = Math.max(0, Math.min(png.width - 1, x));
+  const clampedY = Math.max(0, Math.min(png.height - 1, y));
+  const pixelIndex = (png.width * clampedY + clampedX) << 2;
+
+  return new THREE.Color(
+    png.data[pixelIndex] / 255,
+    png.data[pixelIndex + 1] / 255,
+    png.data[pixelIndex + 2] / 255
+  );
+};
+
+const colorForGridPoint = (grid: MaskGrid, row: number, col: number) => {
+  const sourceX = Math.floor((col / grid.cols) * grid.png.width);
+  const sourceY = Math.floor((row / grid.rows) * grid.png.height);
+
+  return getColorAt(grid.png, sourceX, sourceY);
+};
+
 const addSideQuad = (
   positions: number[],
+  colors: number[],
   indices: number[],
   a: THREE.Vector3,
   b: THREE.Vector3,
   c: THREE.Vector3,
-  d: THREE.Vector3
+  d: THREE.Vector3,
+  colorA: THREE.Color,
+  colorB: THREE.Color
 ) => {
   const start = positions.length / 3;
   positions.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, d.x, d.y, d.z);
+  colors.push(
+    colorA.r, colorA.g, colorA.b,
+    colorB.r, colorB.g, colorB.b,
+    colorA.r, colorA.g, colorA.b,
+    colorB.r, colorB.g, colorB.b
+  );
   indices.push(start, start + 1, start + 2, start + 1, start + 3, start + 2);
 };
 
@@ -231,6 +260,7 @@ const createSideGeometry = (grid: MaskGrid) => {
   const width = PLUSH_WIDTH;
   const height = PLUSH_WIDTH / grid.aspectRatio;
   const positions: number[] = [];
+  const colors: number[] = [];
   const indices: number[] = [];
 
   const pointFor = (row: number, col: number, z: number) =>
@@ -245,44 +275,56 @@ const createSideGeometry = (grid: MaskGrid) => {
       if (!isInside(grid.cells, row - 1, col)) {
         addSideQuad(
           positions,
+          colors,
           indices,
           pointFor(row, col, SIDE_THICKNESS),
           pointFor(row, col + 1, SIDE_THICKNESS),
           pointFor(row, col, -SIDE_THICKNESS),
-          pointFor(row, col + 1, -SIDE_THICKNESS)
+          pointFor(row, col + 1, -SIDE_THICKNESS),
+          colorForGridPoint(grid, row, col),
+          colorForGridPoint(grid, row, col + 1)
         );
       }
 
       if (!isInside(grid.cells, row + 1, col)) {
         addSideQuad(
           positions,
+          colors,
           indices,
           pointFor(row + 1, col + 1, SIDE_THICKNESS),
           pointFor(row + 1, col, SIDE_THICKNESS),
           pointFor(row + 1, col + 1, -SIDE_THICKNESS),
-          pointFor(row + 1, col, -SIDE_THICKNESS)
+          pointFor(row + 1, col, -SIDE_THICKNESS),
+          colorForGridPoint(grid, row + 1, col + 1),
+          colorForGridPoint(grid, row + 1, col)
         );
       }
 
       if (!isInside(grid.cells, row, col - 1)) {
         addSideQuad(
           positions,
+          colors,
           indices,
           pointFor(row + 1, col, SIDE_THICKNESS),
           pointFor(row, col, SIDE_THICKNESS),
           pointFor(row + 1, col, -SIDE_THICKNESS),
-          pointFor(row, col, -SIDE_THICKNESS)
+          pointFor(row, col, -SIDE_THICKNESS),
+          colorForGridPoint(grid, row + 1, col),
+          colorForGridPoint(grid, row, col)
         );
       }
 
       if (!isInside(grid.cells, row, col + 1)) {
         addSideQuad(
           positions,
+          colors,
           indices,
           pointFor(row, col + 1, SIDE_THICKNESS),
           pointFor(row + 1, col + 1, SIDE_THICKNESS),
           pointFor(row, col + 1, -SIDE_THICKNESS),
-          pointFor(row + 1, col + 1, -SIDE_THICKNESS)
+          pointFor(row + 1, col + 1, -SIDE_THICKNESS),
+          colorForGridPoint(grid, row, col + 1),
+          colorForGridPoint(grid, row + 1, col + 1)
         );
       }
     }
@@ -290,6 +332,7 @@ const createSideGeometry = (grid: MaskGrid) => {
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
 
@@ -311,7 +354,7 @@ const createPlushMesh = (imageUri: string) => {
   const backMesh = new THREE.Mesh(createSurfaceGeometry(grid, -1), photoMaterial);
   const sideMesh = new THREE.Mesh(
     createSideGeometry(grid),
-    new THREE.MeshBasicMaterial({ color: '#ddd8d1', side: THREE.DoubleSide })
+    new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide })
   );
 
   group.add(sideMesh, frontMesh, backMesh);
