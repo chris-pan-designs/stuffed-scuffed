@@ -176,7 +176,7 @@ const createSurfaceGeometry = (grid: MaskGrid, direction: 1 | -1) => {
       const x = (col / grid.cols - 0.5) * width;
       const y = (0.5 - row / grid.rows) * height;
       const distance = getVertexDistance(grid, row, col);
-      const normalizedDistance = distance / maxDistance;
+      const normalizedDistance = Math.max(0, (distance - 1) / Math.max(1, maxDistance - 1));
       const puff = PUFF_AMOUNT * Math.sin(normalizedDistance * Math.PI * 0.5);
       const z = direction * (SIDE_THICKNESS + puff);
 
