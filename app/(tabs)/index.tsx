@@ -1,12 +1,15 @@
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import Svg, { Path } from 'react-native-svg';
 import { removeBackground } from '@/lib/backgroundRemoval';
 import { detectOutlineFromPngDataUri, type DetectedOutline } from '@/lib/outlineDetection';
 
+const PLUSH_DEPTH_LAYERS = Array.from({ length: 10 }, (_, index) => index + 1);
+
 export default function HomeScreen() {
   const [cutoutImageUri, setCutoutImageUri] = useState<string | null>(null);
-  const latestOutlineRef = useRef<DetectedOutline | null>(null);
+  const [outline, setOutline] = useState<DetectedOutline | null>(null);
   const [isRemovingBackground, setIsRemovingBackground] = useState(false);
 
   const pickImage = async () => {
@@ -28,7 +31,7 @@ export default function HomeScreen() {
     }
 
     setIsRemovingBackground(true);
-    latestOutlineRef.current = null;
+    setOutline(null);
 
     try {
       const selectedImage = result.assets[0];
@@ -54,7 +57,7 @@ export default function HomeScreen() {
         });
 
         setCutoutImageUri(imageDataUri);
-        latestOutlineRef.current = detectOutlineFromPngDataUri(imageDataUri);
+        setOutline(detectOutlineFromPngDataUri(imageDataUri));
         return;
       }
 
@@ -65,7 +68,7 @@ export default function HomeScreen() {
       });
 
       setCutoutImageUri(cutout.cutoutUri);
-      latestOutlineRef.current = detectOutlineFromPngDataUri(cutout.cutoutUri);
+      setOutline(detectOutlineFromPngDataUri(cutout.cutoutUri));
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Something went wrong.';
       Alert.alert('Could not cut out photo', message);
@@ -79,6 +82,23 @@ export default function HomeScreen() {
       <View style={styles.stage}>
         {cutoutImageUri ? (
           <View style={styles.previewFrame}>
+            {outline?.path ? (
+              <Svg
+                pointerEvents="none"
+                style={styles.depthLayer}
+                viewBox={`0 0 ${outline.imageWidth} ${outline.imageHeight}`}>
+                {PLUSH_DEPTH_LAYERS.map((layer) => (
+                  <Path
+                    key={`depth-${layer}`}
+                    d={outline.path}
+                    fill={layer > 7 ? '#D9D3CC' : '#C9C2BA'}
+                    opacity={0.2 + layer * 0.045}
+                    transform={`translate(${layer * 2.6} ${layer * 3.2})`}
+                  />
+                ))}
+              </Svg>
+            ) : null}
+
             <Image
               source={{ uri: cutoutImageUri }}
               resizeMode="contain"
@@ -127,11 +147,20 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '72%',
     shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 18 },
+    shadowOffset: { width: 0, height: 22 },
     shadowOpacity: 0.2,
-    shadowRadius: 24,
+    shadowRadius: 26,
     elevation: 8,
-    transform: [{ rotate: '-2deg' }, { scale: 1.03 }],
+    transform: [
+      { perspective: 900 },
+      { rotateX: '5deg' },
+      { rotateY: '-8deg' },
+      { rotate: '-2deg' },
+      { scale: 1.03 },
+    ],
+  },
+  depthLayer: {
+    ...StyleSheet.absoluteFillObject,
   },
   previewImage: {
     width: '100%',
