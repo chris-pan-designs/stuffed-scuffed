@@ -17,8 +17,8 @@ type SceneState = {
   renderer: THREE.WebGLRenderer | null;
 };
 
-const PLUSH_DEPTH = 0.16;
-const FACE_BULGE = 0.12;
+const EDGE_THICKNESS = 0.035;
+const FACE_BULGE = 0.34;
 const NORMALIZED_SIZE = 3.2;
 const SMOOTHING_PASSES = 2;
 
@@ -109,16 +109,63 @@ const applyImageUvs = (
   geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
 };
 
-const puffFaceGeometry = (geometry: THREE.BufferGeometry, z: number, direction: 1 | -1) => {
+const findCenter = (points: OutlinePoint[]) => {
+  const total = points.reduce(
+    (accumulator, point) => ({
+      x: accumulator.x + point.x,
+      y: accumulator.y + point.y,
+    }),
+    { x: 0, y: 0 }
+  );
+
+  return {
+    x: total.x / points.length,
+    y: total.y / points.length,
+  };
+};
+
+const createBoundaryLookup = (points: OutlinePoint[]) => {
+  const center = findCenter(points);
+  const buckets = new Map<number, number>();
+
+  points.forEach((point) => {
+    const angle = Math.atan2(point.y - center.y, point.x - center.x);
+    const bucket = Math.round(((angle + Math.PI) / (Math.PI * 2)) * 720);
+    const radius = Math.hypot(point.x - center.x, point.y - center.y);
+    buckets.set(bucket, Math.max(buckets.get(bucket) ?? 0, radius));
+  });
+
+  return { center, buckets };
+};
+
+const getEdgeFalloff = (
+  x: number,
+  y: number,
+  boundary: ReturnType<typeof createBoundaryLookup>
+) => {
+  const angle = Math.atan2(y - boundary.center.y, x - boundary.center.x);
+  const bucket = Math.round(((angle + Math.PI) / (Math.PI * 2)) * 720);
+  const boundaryRadius = boundary.buckets.get(bucket) ?? NORMALIZED_SIZE * 0.5;
+  const radius = Math.hypot(x - boundary.center.x, y - boundary.center.y);
+  const normalizedRadius = Math.min(1, radius / Math.max(boundaryRadius, 0.001));
+
+  return Math.pow(Math.max(0, 1 - normalizedRadius), 0.55);
+};
+
+const puffFaceGeometry = (
+  geometry: THREE.BufferGeometry,
+  direction: 1 | -1,
+  boundary: ReturnType<typeof createBoundaryLookup>
+) => {
   const position = geometry.getAttribute('position');
 
   for (let index = 0; index < position.count; index += 1) {
     const x = position.getX(index);
     const y = position.getY(index);
-    const radialDistance = Math.min(1, Math.hypot(x, y) / (NORMALIZED_SIZE * 0.54));
-    const bulge = FACE_BULGE * (1 - radialDistance * radialDistance);
+    const falloff = getEdgeFalloff(x, y, boundary);
+    const z = direction * (EDGE_THICKNESS + FACE_BULGE * falloff);
 
-    position.setZ(index, z + bulge * direction);
+    position.setZ(index, z);
   }
 
   position.needsUpdate = true;
@@ -129,18 +176,18 @@ const createFaceMesh = ({
   shape,
   outline,
   texture,
-  z,
   direction,
+  boundary,
 }: {
   shape: THREE.Shape;
   outline: DetectedOutline;
   texture: THREE.Texture;
-  z: number;
   direction: 1 | -1;
+  boundary: ReturnType<typeof createBoundaryLookup>;
 }) => {
-  const geometry = new THREE.ShapeGeometry(shape, 12);
+  const geometry = new THREE.ShapeGeometry(shape, 16);
   applyImageUvs(geometry, outline, NORMALIZED_SIZE);
-  puffFaceGeometry(geometry, z, direction);
+  puffFaceGeometry(geometry, direction, boundary);
 
   const material = new THREE.MeshBasicMaterial({
     map: texture,
@@ -158,39 +205,54 @@ const createPlushMesh = (imageUri: string, outline: DetectedOutline) => {
   const shape = createShape(normalizedPoints);
   const texture = createTexture(imageUri);
 
-  const sideGeometry = new THREE.ExtrudeGeometry(shape, {
-    depth: PLUSH_DEPTH,
-    bevelEnabled: true,
-    bevelSize: 0.075,
-    bevelThickness: 0.06,
-    bevelSegments: 8,
-    curveSegments: 12,
-  });
-  sideGeometry.center();
+  const boundary = createBoundaryLookup(normalizedPoints);
 
-  const sideMaterial = new THREE.MeshStandardMaterial({
-    color: '#eee6dc',
+  const seamGeometry = new THREE.BufferGeometry();
+  const seamPositions: number[] = [];
+  const seamIndices: number[] = [];
+
+  normalizedPoints.forEach((point) => {
+    seamPositions.push(point.x, point.y, EDGE_THICKNESS, point.x, point.y, -EDGE_THICKNESS);
+  });
+
+  normalizedPoints.forEach((_, index) => {
+    const nextIndex = (index + 1) % normalizedPoints.length;
+    const topCurrent = index * 2;
+    const bottomCurrent = topCurrent + 1;
+    const topNext = nextIndex * 2;
+    const bottomNext = topNext + 1;
+
+    seamIndices.push(topCurrent, bottomCurrent, topNext, bottomCurrent, bottomNext, topNext);
+  });
+
+  seamGeometry.setAttribute('position', new THREE.Float32BufferAttribute(seamPositions, 3));
+  seamGeometry.setIndex(seamIndices);
+  seamGeometry.computeVertexNormals();
+
+  const seamMaterial = new THREE.MeshStandardMaterial({
+    color: '#ddd8d1',
     roughness: 1,
     metalness: 0,
+    side: THREE.DoubleSide,
   });
-  const sideMesh = new THREE.Mesh(sideGeometry, sideMaterial);
+  const seamMesh = new THREE.Mesh(seamGeometry, seamMaterial);
 
   const frontMesh = createFaceMesh({
     shape,
     outline,
     texture,
-    z: PLUSH_DEPTH / 2 + 0.012,
     direction: 1,
+    boundary,
   });
   const backMesh = createFaceMesh({
     shape,
     outline,
     texture,
-    z: -(PLUSH_DEPTH / 2 + 0.012),
     direction: -1,
+    boundary,
   });
 
-  group.add(sideMesh, frontMesh, backMesh);
+  group.add(seamMesh, frontMesh, backMesh);
   group.rotation.x = -0.12;
   group.rotation.y = -0.28;
 
