@@ -29,7 +29,7 @@ type MaskGrid = {
 };
 
 const ALPHA_THRESHOLD = 24;
-const MAX_GRID_SIZE = 88;
+const MAX_GRID_SIZE = 132;
 const PLUSH_WIDTH = 3.1;
 const PUFF_AMOUNT = 0.34;
 const SIDE_THICKNESS = 0;
@@ -65,6 +65,22 @@ const getAlphaAt = (png: PNG, x: number, y: number) => {
   return png.data[pixelIndex + 3];
 };
 
+const sampleCellAlpha = (png: PNG, row: number, col: number, rows: number, cols: number) => {
+  let alphaTotal = 0;
+  let sampleCount = 0;
+
+  for (let ySample = 0; ySample < 3; ySample += 1) {
+    for (let xSample = 0; xSample < 3; xSample += 1) {
+      const sourceX = Math.floor(((col + (xSample + 0.5) / 3) / cols) * png.width);
+      const sourceY = Math.floor(((row + (ySample + 0.5) / 3) / rows) * png.height);
+      alphaTotal += getAlphaAt(png, sourceX, sourceY);
+      sampleCount += 1;
+    }
+  }
+
+  return alphaTotal / sampleCount;
+};
+
 const createMaskGrid = (imageUri: string): MaskGrid => {
   const png = PNG.sync.read(Buffer.from(getBase64FromDataUri(imageUri), 'base64'));
   const aspectRatio = png.width / png.height;
@@ -74,9 +90,7 @@ const createMaskGrid = (imageUri: string): MaskGrid => {
 
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
-      const sourceX = Math.floor(((col + 0.5) / cols) * png.width);
-      const sourceY = Math.floor(((row + 0.5) / rows) * png.height);
-      cells[row][col] = getAlphaAt(png, sourceX, sourceY) > ALPHA_THRESHOLD;
+      cells[row][col] = sampleCellAlpha(png, row, col, rows, cols) > ALPHA_THRESHOLD;
     }
   }
 
