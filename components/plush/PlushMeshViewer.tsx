@@ -2,6 +2,7 @@ import { Buffer } from 'buffer';
 import { useEffect, useMemo, useRef } from 'react';
 import { PanResponder, StyleSheet, View, type GestureResponderEvent, type LayoutChangeEvent } from 'react-native';
 import { GLView, type ExpoWebGLRenderingContext } from 'expo-gl';
+import { Accelerometer } from 'expo-sensors';
 import { Renderer, TextureLoader } from 'expo-three';
 import { PNG } from 'pngjs/browser';
 import * as THREE from 'three';
@@ -9,6 +10,7 @@ import * as THREE from 'three';
 import type { DetectedOutline } from '@/lib/outlineDetection';
 
 type PlushMeshViewerProps = {
+  onPlushesPrepared?: () => void;
   plushes: {
     id: string;
     imageUri: string;
@@ -112,13 +114,20 @@ const ALPHA_THRESHOLD = 24;
 const COLLISION_ALPHA_THRESHOLD = 96;
 const MAX_GRID_SIZE = 132;
 const PLUSH_WIDTH = 3.1;
-const PLUSH_TARGET_SIZE = 1.08;
+const PLUSH_TARGET_SIZE = 1.1;
 const PUFF_AMOUNT = 0.2;
 const EDGE_VOLUME_AMOUNT = 0.075;
 const FLAT_EDGE_BAND = 0.055;
 const SIDE_THICKNESS = 0;
 const DEFAULT_ROTATION = { x: -0.1, y: -0.25, z: 0 };
-const PHYSICS_GRAVITY = 5.8;
+const PHYSICS_GRAVITY = 12.5;
+const DEVICE_GRAVITY_SMOOTHING = 0.72;
+const DEVICE_GRAVITY_UPDATE_MS = 16;
+const DEVICE_GRAVITY_WAKEUP_IMPULSE = 0.42;
+const DEVICE_SHAKE_THRESHOLD = 1.05;
+const DEVICE_SHAKE_IMPULSE = 2.2;
+const DEVICE_SHAKE_TUMBLE = 2.8;
+const DEVICE_SHAKE_COOLDOWN_MS = 120;
 const PHYSICS_BOUNCE = 0.18;
 const PHYSICS_LINEAR_DAMPING = 0.992;
 const PHYSICS_ANGULAR_DAMPING = 0.999;
@@ -127,8 +136,8 @@ const PHYSICS_FLOOR_FRICTION = 0.84;
 const PHYSICS_REST_VELOCITY = 0.08;
 const PHYSICS_SLEEP_VELOCITY = 0.16;
 const PHYSICS_SLEEP_ANGULAR_VELOCITY = 0.18;
-const PHYSICS_FLOOR_REST_DAMPING = 0.68;
-const PHYSICS_FLOOR_REST_ANGULAR_DAMPING = 0.58;
+const PHYSICS_FLOOR_REST_DAMPING = 0.78;
+const PHYSICS_FLOOR_REST_ANGULAR_DAMPING = 0.68;
 const PHYSICS_DRAG_ROTATION = 0.68;
 const PHYSICS_RELEASE_TORQUE = 0.54;
 const PHYSICS_THROW_TUMBLE = 0.95;
@@ -136,6 +145,7 @@ const PHYSICS_MAX_ANGULAR_SPEED = 7;
 const PHYSICS_HANG_TORQUE = 18;
 const PHYSICS_HANG_DAMPING = 0.975;
 const PHYSICS_FLOOR_TOPPLE_TORQUE = 4.8;
+const PHYSICS_AIR_GRAVITY_TUMBLE = 0.34;
 const PHYSICS_PLUSH_COLLISION_BOUNCE = 0.24;
 const PHYSICS_PLUSH_COLLISION_PUSH = 0.42;
 const PHYSICS_PLUSH_COLLISION_RADIUS_SCALE = 0.86;
@@ -689,6 +699,40 @@ const getWorldPoint = (
     0
   );
 
+const getAccelerometerGravity = (x: number, y: number) => {
+  const gravity = new THREE.Vector3(x, y, 0);
+
+  if (gravity.lengthSq() < 0.0001) {
+    return new THREE.Vector3(0, -PHYSICS_GRAVITY, 0);
+  }
+
+  return gravity.normalize().multiplyScalar(PHYSICS_GRAVITY);
+};
+
+const applyShakeImpulse = (runtimes: PlushRuntime[], shake: THREE.Vector3) => {
+  const shakeStrength = shake.length();
+
+  if (shakeStrength < DEVICE_SHAKE_THRESHOLD) {
+    return;
+  }
+
+  const shakeDirection = shake.clone().normalize();
+  const impulseStrength = Math.min(1.8, shakeStrength) * DEVICE_SHAKE_IMPULSE;
+
+  runtimes.forEach((runtime, index) => {
+    if (runtime.physics.dragging) {
+      return;
+    }
+
+    const alternatingKick = index % 2 === 0 ? 1 : -1;
+    runtime.physics.velocity.x += shakeDirection.x * impulseStrength;
+    runtime.physics.velocity.y += shakeDirection.y * impulseStrength;
+    runtime.physics.angularVelocity.z +=
+      alternatingKick * DEVICE_SHAKE_TUMBLE * Math.min(1.6, shakeStrength);
+    clampAngularVelocity(runtime.physics.angularVelocity);
+  });
+};
+
 const getRotatedHalfExtents = (physics: PhysicsState, rotationZ: number) => {
   const cos = Math.abs(Math.cos(rotationZ));
   const sin = Math.abs(Math.sin(rotationZ));
@@ -1027,6 +1071,7 @@ const applyPhysicsFrame = (
   physics: PhysicsState,
   softness: PlushSoftnessState,
   state: SceneState,
+  gravity: THREE.Vector3,
   frameTime: number
 ) => {
   if (physics.lastFrameTime === null) {
@@ -1044,7 +1089,7 @@ const applyPhysicsFrame = (
     physics.angularVelocity.y = 0;
 
     const grabWorldOffset = physics.grabLocalOffset.clone().applyQuaternion(mesh.quaternion);
-    const gravityTorqueZ = grabWorldOffset.x * PHYSICS_GRAVITY;
+    const gravityTorqueZ = -(grabWorldOffset.x * gravity.y - grabWorldOffset.y * gravity.x);
 
     physics.angularVelocity.z += gravityTorqueZ * PHYSICS_HANG_TORQUE * deltaSeconds;
     clampAngularVelocity(physics.angularVelocity);
@@ -1057,7 +1102,11 @@ const applyPhysicsFrame = (
     physics.velocity.subVectors(physics.position, previousPosition).multiplyScalar(1 / Math.max(deltaSeconds, 0.001));
     physics.velocity.z = 0;
   } else {
-    physics.velocity.y -= PHYSICS_GRAVITY * deltaSeconds;
+    physics.velocity.addScaledVector(gravity, deltaSeconds);
+    const gravityTumbleZ = physics.velocity.x * gravity.y - physics.velocity.y * gravity.x;
+    physics.angularVelocity.z += gravityTumbleZ * PHYSICS_AIR_GRAVITY_TUMBLE * deltaSeconds;
+    clampAngularVelocity(physics.angularVelocity);
+
     physics.position.addScaledVector(physics.velocity, deltaSeconds);
     physics.velocity.multiplyScalar(PHYSICS_LINEAR_DAMPING);
 
@@ -1067,6 +1116,11 @@ const applyPhysicsFrame = (
     const { impacts, isTouchingFloor } = clampPlushToBounds(mesh, physics, state);
 
     impacts.forEach((impact) => registerPlushImpact(mesh, softness, impact));
+
+    if (impacts.length > 0 && physics.velocity.length() < PHYSICS_PLUSH_RESTING_CONTACT_SPEED) {
+      physics.velocity.multiplyScalar(PHYSICS_FLOOR_REST_DAMPING);
+      physics.angularVelocity.multiplyScalar(PHYSICS_FLOOR_REST_ANGULAR_DAMPING);
+    }
 
     if (isTouchingFloor) {
       const tallness = Math.max(0, (physics.halfHeight - physics.halfWidth) / Math.max(physics.halfHeight, 0.001));
@@ -1423,7 +1477,7 @@ const isTouchOnPlush = (
   return null;
 };
 
-export function PlushMeshViewer({ plushes, physicsEnabled = false }: PlushMeshViewerProps) {
+export function PlushMeshViewer({ onPlushesPrepared, plushes, physicsEnabled = false }: PlushMeshViewerProps) {
   const stateRef = useRef<SceneState>({
     animationFrame: null,
     camera: null,
@@ -1436,6 +1490,10 @@ export function PlushMeshViewer({ plushes, physicsEnabled = false }: PlushMeshVi
   const layoutRef = useRef({ width: 1, height: 1 });
   const runtimesRef = useRef<PlushRuntime[]>([]);
   const activeRuntimeRef = useRef<PlushRuntime | null>(null);
+  const gravityRef = useRef(new THREE.Vector3(0, -PHYSICS_GRAVITY, 0));
+  const previousGravityRef = useRef(new THREE.Vector3(0, -PHYSICS_GRAVITY, 0));
+  const previousAccelerationRef = useRef(new THREE.Vector3());
+  const lastShakeTimeRef = useRef(0);
   const physicsEnabledRef = useRef(physicsEnabled);
   const rotationRef = useRef(DEFAULT_ROTATION);
   const gestureStartRotationRef = useRef(DEFAULT_ROTATION);
@@ -1443,6 +1501,56 @@ export function PlushMeshViewer({ plushes, physicsEnabled = false }: PlushMeshVi
   useEffect(() => {
     physicsEnabledRef.current = physicsEnabled;
   }, [physicsEnabled]);
+
+  useEffect(() => {
+    let isMounted = true;
+    let subscription: { remove: () => void } | null = null;
+
+    const subscribeToGravity = async () => {
+      const isAvailable = await Accelerometer.isAvailableAsync();
+
+      if (!isMounted || !isAvailable) {
+        return;
+      }
+
+      Accelerometer.setUpdateInterval(DEVICE_GRAVITY_UPDATE_MS);
+      subscription = Accelerometer.addListener(({ x, y, z }) => {
+        const acceleration = new THREE.Vector3(x, y, z);
+        const shake = acceleration.clone().sub(previousAccelerationRef.current);
+        const now = Date.now();
+
+        if (now - lastShakeTimeRef.current > DEVICE_SHAKE_COOLDOWN_MS && shake.length() > DEVICE_SHAKE_THRESHOLD) {
+          applyShakeImpulse(runtimesRef.current, shake);
+          lastShakeTimeRef.current = now;
+        }
+
+        previousAccelerationRef.current.copy(acceleration);
+
+        const targetGravity = getAccelerometerGravity(x, y);
+        const previousDirection = previousGravityRef.current.clone().normalize();
+        const nextDirection = targetGravity.clone().normalize();
+        const directionChange = previousDirection.distanceTo(nextDirection);
+
+        gravityRef.current.lerp(targetGravity, DEVICE_GRAVITY_SMOOTHING);
+        previousGravityRef.current.copy(gravityRef.current);
+
+        if (directionChange > 0.28) {
+          runtimesRef.current.forEach((runtime) => {
+            if (!runtime.physics.dragging && runtime.physics.velocity.length() < PHYSICS_PLUSH_RESTING_CONTACT_SPEED) {
+              runtime.physics.velocity.addScaledVector(nextDirection, DEVICE_GRAVITY_WAKEUP_IMPULSE * directionChange);
+            }
+          });
+        }
+      });
+    };
+
+    subscribeToGravity();
+
+    return () => {
+      isMounted = false;
+      subscription?.remove();
+    };
+  }, []);
 
   const handleLayout = (event: LayoutChangeEvent) => {
     layoutRef.current = event.nativeEvent.layout;
@@ -1634,7 +1742,11 @@ export function PlushMeshViewer({ plushes, physicsEnabled = false }: PlushMeshVi
       runtime.physics.position.z = runtime.depthZ;
       runtime.mesh.position.z = runtime.depthZ;
     });
-  }, [plushes]);
+
+    if (newPlushes.length > 0) {
+      onPlushesPrepared?.();
+    }
+  }, [onPlushesPrepared, plushes]);
 
   const handleContextCreate = (gl: ExpoWebGLRenderingContext) => {
     const renderer = new Renderer({ gl, alpha: true, antialias: true }) as unknown as THREE.WebGLRenderer;
@@ -1659,12 +1771,20 @@ export function PlushMeshViewer({ plushes, physicsEnabled = false }: PlushMeshVi
     runtimesRef.current = plushes.map((plush, index) =>
       createPlushRuntime(plush, stateRef.current, index, plushes.length, physicsEnabled)
     );
+    onPlushesPrepared?.();
 
     const render = (frameTime: number) => {
       stateRef.current.animationFrame = requestAnimationFrame(render);
       if (physicsEnabledRef.current) {
         runtimesRef.current.forEach((runtime) => {
-          applyPhysicsFrame(runtime.mesh, runtime.physics, runtime.softness, stateRef.current, frameTime);
+          applyPhysicsFrame(
+            runtime.mesh,
+            runtime.physics,
+            runtime.softness,
+            stateRef.current,
+            gravityRef.current,
+            frameTime
+          );
           runtime.physics.position.z = runtime.depthZ;
           runtime.physics.velocity.z = 0;
         });

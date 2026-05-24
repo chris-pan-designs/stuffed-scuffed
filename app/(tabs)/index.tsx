@@ -13,17 +13,22 @@ type PlushItem = {
 
 export default function HomeScreen() {
   const [plushes, setPlushes] = useState<PlushItem[]>([]);
+  const [isPreparingPlush, setIsPreparingPlush] = useState(false);
   const [isRemovingBackground, setIsRemovingBackground] = useState(false);
 
   const addPlush = (imageUri: string) => {
-    setPlushes((currentPlushes) => [
-      ...currentPlushes,
-      {
-        id: `${Date.now()}-${currentPlushes.length}`,
-        imageUri,
-        outline: detectOutlineFromPngDataUri(imageUri),
-      },
-    ]);
+    setIsPreparingPlush(true);
+
+    requestAnimationFrame(() => {
+      setPlushes((currentPlushes) => [
+        ...currentPlushes,
+        {
+          id: `${Date.now()}-${currentPlushes.length}`,
+          imageUri,
+          outline: detectOutlineFromPngDataUri(imageUri),
+        },
+      ]);
+    });
   };
 
   const pickImage = async () => {
@@ -93,14 +98,14 @@ export default function HomeScreen() {
       <View style={styles.stage}>
         {plushes.length > 0 ? (
           <View style={styles.previewFrame}>
-            <PlushMeshViewer plushes={plushes} physicsEnabled />
+            <PlushMeshViewer plushes={plushes} physicsEnabled onPlushesPrepared={() => setIsPreparingPlush(false)} />
           </View>
         ) : null}
 
-        {isRemovingBackground ? (
+        {isRemovingBackground || isPreparingPlush ? (
           <View style={styles.loadingPill}>
             <ActivityIndicator color="#FFFFFF" />
-            <Text style={styles.loadingText}>Cutting out...</Text>
+            <Text style={styles.loadingText}>{isRemovingBackground ? 'Cutting out...' : 'Preparing plush...'}</Text>
           </View>
         ) : null}
       </View>
@@ -108,12 +113,12 @@ export default function HomeScreen() {
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Create a new plush"
-        disabled={isRemovingBackground}
+        disabled={isRemovingBackground || isPreparingPlush}
         onPress={pickImage}
         style={({ pressed }) => [
           styles.newPlushButton,
           pressed && styles.newPlushButtonPressed,
-          isRemovingBackground && styles.newPlushButtonDisabled,
+          (isRemovingBackground || isPreparingPlush) && styles.newPlushButtonDisabled,
         ]}>
         <Text style={styles.plus}>+</Text>
         <Text style={styles.buttonText}>New plush</Text>
