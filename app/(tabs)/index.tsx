@@ -1,11 +1,9 @@
 import { useState } from 'react';
-import { ActivityIndicator, Alert, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import Svg, { Path } from 'react-native-svg';
 import { removeBackground } from '@/lib/backgroundRemoval';
+import { PlushMeshViewer } from '@/components/plush/PlushMeshViewer';
 import { detectOutlineFromPngDataUri, type DetectedOutline } from '@/lib/outlineDetection';
-
-const PLUSH_DEPTH_LAYERS = Array.from({ length: 10 }, (_, index) => index + 1);
 
 export default function HomeScreen() {
   const [cutoutImageUri, setCutoutImageUri] = useState<string | null>(null);
@@ -80,30 +78,9 @@ export default function HomeScreen() {
   return (
     <View style={styles.screen}>
       <View style={styles.stage}>
-        {cutoutImageUri ? (
+        {cutoutImageUri && outline ? (
           <View style={styles.previewFrame}>
-            {outline?.path ? (
-              <Svg
-                pointerEvents="none"
-                style={styles.depthLayer}
-                viewBox={`0 0 ${outline.imageWidth} ${outline.imageHeight}`}>
-                {PLUSH_DEPTH_LAYERS.map((layer) => (
-                  <Path
-                    key={`depth-${layer}`}
-                    d={outline.path}
-                    fill={layer > 7 ? '#D9D3CC' : '#C9C2BA'}
-                    opacity={0.2 + layer * 0.045}
-                    transform={`translate(${layer * 2.6} ${layer * 3.2})`}
-                  />
-                ))}
-              </Svg>
-            ) : null}
-
-            <Image
-              source={{ uri: cutoutImageUri }}
-              resizeMode="contain"
-              style={styles.previewImage}
-            />
+            <PlushMeshViewer imageUri={cutoutImageUri} outline={outline} />
           </View>
         ) : null}
 
@@ -146,25 +123,6 @@ const styles = StyleSheet.create({
   previewFrame: {
     width: '100%',
     height: '72%',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 22 },
-    shadowOpacity: 0.2,
-    shadowRadius: 26,
-    elevation: 8,
-    transform: [
-      { perspective: 900 },
-      { rotateX: '5deg' },
-      { rotateY: '-8deg' },
-      { rotate: '-2deg' },
-      { scale: 1.03 },
-    ],
-  },
-  depthLayer: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  previewImage: {
-    width: '100%',
-    height: '100%',
   },
   loadingPill: {
     position: 'absolute',
