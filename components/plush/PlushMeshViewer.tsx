@@ -19,9 +19,11 @@ type SceneState = {
 };
 
 const PLUSH_WIDTH = 3.1;
-const PUFF_AMOUNT = 0.22;
-const EDGE_THICKNESS = 0.012;
-const MAX_OUTLINE_POINTS = 220;
+const PUFF_AMOUNT = 0.28;
+const EDGE_THICKNESS = 0.04;
+const MAX_OUTLINE_POINTS = 44;
+const BLOB_SMOOTHING_PASSES = 8;
+const BLOB_INFLATE = 1.08;
 
 const createTexture = (imageUri: string) => {
   const texture = new TextureLoader().load(imageUri);
@@ -40,15 +42,40 @@ const limitOutlinePoints = (points: OutlinePoint[]) => {
   return points.filter((_, index) => index % step === 0);
 };
 
+const smoothBlobPoints = (points: OutlinePoint[]) => {
+  let smoothedPoints = points;
+
+  for (let pass = 0; pass < BLOB_SMOOTHING_PASSES; pass += 1) {
+    smoothedPoints = smoothedPoints.map((point, index) => {
+      const previous = smoothedPoints[(index - 1 + smoothedPoints.length) % smoothedPoints.length];
+      const next = smoothedPoints[(index + 1) % smoothedPoints.length];
+
+      return {
+        x: previous.x * 0.25 + point.x * 0.5 + next.x * 0.25,
+        y: previous.y * 0.25 + point.y * 0.5 + next.y * 0.25,
+      };
+    });
+  }
+
+  const center = findCenter(smoothedPoints);
+
+  return smoothedPoints.map((point) => ({
+    x: center.x + (point.x - center.x) * BLOB_INFLATE,
+    y: center.y + (point.y - center.y) * BLOB_INFLATE,
+  }));
+};
+
 const normalizeOutlinePoints = (outline: DetectedOutline) => {
   const sourceMaxDimension = Math.max(outline.imageWidth, outline.imageHeight);
   const centerX = outline.imageWidth / 2;
   const centerY = outline.imageHeight / 2;
 
-  return limitOutlinePoints(outline.points).map((point) => ({
+  const normalizedPoints = limitOutlinePoints(outline.points).map((point) => ({
     x: ((point.x - centerX) / sourceMaxDimension) * PLUSH_WIDTH,
     y: -((point.y - centerY) / sourceMaxDimension) * PLUSH_WIDTH,
   }));
+
+  return smoothBlobPoints(normalizedPoints);
 };
 
 const findCenter = (points: OutlinePoint[]) => {
@@ -152,7 +179,7 @@ const createPlushMesh = (imageUri: string, outline: DetectedOutline) => {
     new THREE.MeshBasicMaterial({
       color: '#262321',
       transparent: true,
-      opacity: 0.16,
+      opacity: 0.1,
       side: THREE.DoubleSide,
     })
   );
