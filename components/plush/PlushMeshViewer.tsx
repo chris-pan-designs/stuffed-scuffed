@@ -32,7 +32,7 @@ const ALPHA_THRESHOLD = 24;
 const MAX_GRID_SIZE = 132;
 const PLUSH_WIDTH = 3.1;
 const PUFF_AMOUNT = 0.34;
-const SIDE_THICKNESS = 0;
+const SIDE_THICKNESS = -0.006;
 
 const createTexture = (imageUri: string) => {
   const texture = new TextureLoader().load(imageUri);
