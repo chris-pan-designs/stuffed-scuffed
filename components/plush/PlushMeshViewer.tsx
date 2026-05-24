@@ -31,8 +31,8 @@ type MaskGrid = {
 const ALPHA_THRESHOLD = 24;
 const MAX_GRID_SIZE = 132;
 const PLUSH_WIDTH = 3.1;
-const PUFF_AMOUNT = 0.34;
-const SIDE_THICKNESS = -0.006;
+const PUFF_AMOUNT = 0.2;
+const SIDE_THICKNESS = 0;
 
 const createTexture = (imageUri: string) => {
   const texture = new TextureLoader().load(imageUri);
@@ -198,7 +198,8 @@ const createSurfaceGeometry = (grid: MaskGrid, direction: 1 | -1) => {
       const y = (0.5 - row / grid.rows) * height;
       const distance = getVertexDistance(grid, row, col);
       const normalizedDistance = Math.max(0, (distance - 1) / Math.max(1, maxDistance - 1));
-      const puff = PUFF_AMOUNT * Math.sin(normalizedDistance * Math.PI * 0.5);
+      const smoothPuff = normalizedDistance * normalizedDistance * (3 - 2 * normalizedDistance);
+      const puff = PUFF_AMOUNT * smoothPuff;
       const z = direction * (SIDE_THICKNESS + puff);
 
       positions.push(x, y, z);
