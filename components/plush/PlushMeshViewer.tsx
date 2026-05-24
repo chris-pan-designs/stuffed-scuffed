@@ -178,7 +178,7 @@ const createSurfaceGeometry = (grid: MaskGrid, direction: 1 | -1) => {
       const distance = getVertexDistance(grid, row, col);
       const normalizedDistance = distance / maxDistance;
       const puff = PUFF_AMOUNT * Math.sin(normalizedDistance * Math.PI * 0.5);
-      const z = direction * puff;
+      const z = direction * (SIDE_THICKNESS + puff);
 
       positions.push(x, y, z);
       uvs.push(col / grid.cols, 1 - row / grid.rows);
