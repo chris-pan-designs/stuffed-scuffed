@@ -9,8 +9,11 @@ import * as THREE from 'three';
 import type { DetectedOutline } from '@/lib/outlineDetection';
 
 type PlushMeshViewerProps = {
-  imageUri: string;
-  outline: DetectedOutline;
+  plushes: {
+    id: string;
+    imageUri: string;
+    outline: DetectedOutline;
+  }[];
   physicsEnabled?: boolean;
 };
 
@@ -19,8 +22,17 @@ type SceneState = {
   camera: THREE.PerspectiveCamera | null;
   mesh: THREE.Group | null;
   renderer: THREE.WebGLRenderer | null;
+  scene: THREE.Scene | null;
   viewportWorldHeight: number;
   viewportWorldWidth: number;
+};
+
+type PlushRuntime = {
+  depthZ: number;
+  id: string;
+  mesh: THREE.Group;
+  physics: PhysicsState;
+  softness: PlushSoftnessState;
 };
 
 type PhysicsState = {
@@ -37,10 +49,39 @@ type PhysicsState = {
   velocity: THREE.Vector3;
 };
 
+type PlushSoftnessState = {
+  bend: THREE.Vector2;
+  bendVelocity: THREE.Vector2;
+  dentAmount: number;
+  dentCenter: THREE.Vector2;
+  dentNormal: THREE.Vector2;
+  dentVelocity: number;
+  scale: THREE.Vector3;
+  scaleVelocity: THREE.Vector3;
+  wobbleAngle: number;
+  wobbleVelocity: number;
+};
+
+type PlushImpact = {
+  normal: THREE.Vector3;
+  strength: number;
+};
+
+type PlushBendMaterial = THREE.MeshBasicMaterial & {
+  userData: THREE.MeshBasicMaterial['userData'] & {
+    plushBendStrengthUniform?: { value: number };
+    plushBendUniform?: { value: THREE.Vector2 };
+    plushDentAmountUniform?: { value: number };
+    plushDentCenterUniform?: { value: THREE.Vector2 };
+    plushDentNormalUniform?: { value: THREE.Vector2 };
+  };
+};
+
 type PlushHitMask = {
   cells: boolean[][];
   centerCol: number;
   centerRow: number;
+  collisionPoints: THREE.Vector3[];
   cols: number;
   rows: number;
   scaledHeight: number;
@@ -80,6 +121,10 @@ const PHYSICS_ANGULAR_DAMPING = 0.999;
 const PHYSICS_FLOOR_ANGULAR_DAMPING = 0.82;
 const PHYSICS_FLOOR_FRICTION = 0.84;
 const PHYSICS_REST_VELOCITY = 0.08;
+const PHYSICS_SLEEP_VELOCITY = 0.16;
+const PHYSICS_SLEEP_ANGULAR_VELOCITY = 0.18;
+const PHYSICS_FLOOR_REST_DAMPING = 0.68;
+const PHYSICS_FLOOR_REST_ANGULAR_DAMPING = 0.58;
 const PHYSICS_DRAG_ROTATION = 0.68;
 const PHYSICS_RELEASE_TORQUE = 0.54;
 const PHYSICS_THROW_TUMBLE = 0.95;
@@ -87,6 +132,39 @@ const PHYSICS_MAX_ANGULAR_SPEED = 7;
 const PHYSICS_HANG_TORQUE = 18;
 const PHYSICS_HANG_DAMPING = 0.975;
 const PHYSICS_FLOOR_TOPPLE_TORQUE = 4.8;
+const PHYSICS_PLUSH_COLLISION_BOUNCE = 0.24;
+const PHYSICS_PLUSH_COLLISION_PUSH = 0.52;
+const PHYSICS_PLUSH_COLLISION_RADIUS_SCALE = 0.86;
+const PHYSICS_PLUSH_RESTING_CONTACT_SPEED = 0.45;
+const PHYSICS_PLUSH_CONTACT_DAMPING = 0.72;
+const PLUSH_DEPTH_SPACING = 0.045;
+const PLUSH_MAX_DEPTH = 0.14;
+const MAX_COLLISION_SAMPLE_POINTS = 120;
+
+const plushSoftnessTuning = {
+  impactSquashAmount: 0.08,
+  squashDuration: 0.12,
+  returnSpringStrength: 95,
+  wobbleAmount: 0.055,
+  maxSquash: 0.12,
+  impactStretchAmount: 0.32,
+  impactThreshold: 0.12,
+  impactStrengthForMaxSquash: 3.2,
+  scaleDamping: 16,
+  wobbleSpringStrength: 58,
+  wobbleDamping: 8.5,
+  bodyFlexAmount: 0,
+  maxBend: 0.05,
+  bendSpringStrength: 42,
+  bendDamping: 7.5,
+  velocityBendAmount: 0.032,
+  spinBendAmount: 0.018,
+  impactDentAmount: 0.08,
+  maxDent: 0.1,
+  dentRadius: 0.82,
+  dentSpringStrength: 110,
+  dentDamping: 13,
+};
 
 const createTexture = (imageUri: string) => {
   const texture = new TextureLoader().load(imageUri);
@@ -98,6 +176,53 @@ const createTexture = (imageUri: string) => {
   texture.needsUpdate = true;
 
   return texture;
+};
+
+const addGpuBendToMaterial = (material: THREE.MeshBasicMaterial, halfWidth: number, halfHeight: number) => {
+  const bendUniform = { value: new THREE.Vector2() };
+  const bendStrengthUniform = { value: 0 };
+  const dentAmountUniform = { value: 0 };
+  const dentCenterUniform = { value: new THREE.Vector2(0, -1) };
+  const dentNormalUniform = { value: new THREE.Vector2(0, 1) };
+  const halfSizeUniform = { value: new THREE.Vector2(Math.max(halfWidth, 0.001), Math.max(halfHeight, 0.001)) };
+  const bendMaterial = material as PlushBendMaterial;
+
+  bendMaterial.userData.plushBendUniform = bendUniform;
+  bendMaterial.userData.plushBendStrengthUniform = bendStrengthUniform;
+  bendMaterial.userData.plushDentAmountUniform = dentAmountUniform;
+  bendMaterial.userData.plushDentCenterUniform = dentCenterUniform;
+  bendMaterial.userData.plushDentNormalUniform = dentNormalUniform;
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.plushBend = bendUniform;
+    shader.uniforms.plushBendStrength = bendStrengthUniform;
+    shader.uniforms.plushDentAmount = dentAmountUniform;
+    shader.uniforms.plushDentCenter = dentCenterUniform;
+    shader.uniforms.plushDentNormal = dentNormalUniform;
+    shader.uniforms.plushHalfSize = halfSizeUniform;
+    shader.vertexShader = `
+      uniform vec2 plushBend;
+      uniform float plushBendStrength;
+      uniform float plushDentAmount;
+      uniform vec2 plushDentCenter;
+      uniform vec2 plushDentNormal;
+      uniform vec2 plushHalfSize;
+    ${shader.vertexShader}`.replace(
+      '#include <begin_vertex>',
+      `
+      #include <begin_vertex>
+      vec2 plushNormalizedPosition = clamp(transformed.xy / plushHalfSize, vec2(-1.0), vec2(1.0));
+      float plushEdgeGive = max(abs(plushNormalizedPosition.x), abs(plushNormalizedPosition.y));
+      float plushCenterHold = 0.35 + plushEdgeGive * 0.65;
+      transformed.x += plushBend.x * plushNormalizedPosition.y * abs(plushNormalizedPosition.y) * plushCenterHold;
+      transformed.y += plushBend.y * plushNormalizedPosition.x * abs(plushNormalizedPosition.x) * plushCenterHold;
+      transformed.z *= 1.0 - plushBendStrength * 0.45;
+      float plushDentDistance = distance(plushNormalizedPosition, plushDentCenter);
+      float plushDentFalloff = smoothstep(${plushSoftnessTuning.dentRadius.toFixed(2)}, 0.0, plushDentDistance);
+      transformed.xy += plushDentNormal * plushDentAmount * plushDentFalloff * plushHalfSize;
+      transformed.z *= 1.0 - plushDentAmount * plushDentFalloff * 0.75;
+      `
+    );
+  };
 };
 
 const getBase64FromDataUri = (dataUri: string) => {
@@ -470,8 +595,32 @@ const createSideGeometry = (grid: MaskGrid) => {
   return geometry;
 };
 
+const createCollisionSamplePoints = (grid: MaskGrid) => {
+  const pointFor = createGridProjector(grid);
+  const boundaryCells: { row: number; col: number }[] = [];
+
+  for (let row = 0; row < grid.rows; row += 1) {
+    for (let col = 0; col < grid.cols; col += 1) {
+      if (isBoundaryCell(grid.cells, row, col)) {
+        boundaryCells.push({ row, col });
+      }
+    }
+  }
+
+  const step = Math.max(1, Math.ceil(boundaryCells.length / MAX_COLLISION_SAMPLE_POINTS));
+  const points: THREE.Vector3[] = [];
+
+  for (let index = 0; index < boundaryCells.length; index += step) {
+    const cell = boundaryCells[index];
+    points.push(pointFor(cell.row + 0.5, cell.col + 0.5, 0));
+  }
+
+  return points;
+};
+
 const createPlushMesh = (imageUri: string) => {
   const group = new THREE.Group();
+  const visualGroup = new THREE.Group();
   const texture = createTexture(imageUri);
   const grid = createMaskGrid(imageUri);
   const gridMetrics = createGridMetrics(grid);
@@ -481,16 +630,19 @@ const createPlushMesh = (imageUri: string) => {
     alphaTest: 0.08,
     side: THREE.DoubleSide,
   });
+  const sideMaterial = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
 
   const frontMesh = new THREE.Mesh(createSurfaceGeometry(grid, 1), photoMaterial);
   const backMesh = new THREE.Mesh(createSurfaceGeometry(grid, -1), photoMaterial);
-  const sideMesh = new THREE.Mesh(
-    createSideGeometry(grid),
-    new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide })
-  );
+  const sideMesh = new THREE.Mesh(createSideGeometry(grid), sideMaterial);
 
-  group.add(sideMesh, frontMesh, backMesh);
+  addGpuBendToMaterial(photoMaterial, gridMetrics.scaledVisibleWidth / 2, gridMetrics.scaledVisibleHeight / 2);
+  addGpuBendToMaterial(sideMaterial, gridMetrics.scaledVisibleWidth / 2, gridMetrics.scaledVisibleHeight / 2);
+
+  visualGroup.add(sideMesh, frontMesh, backMesh);
+  group.add(visualGroup);
   group.rotation.set(DEFAULT_ROTATION.x, DEFAULT_ROTATION.y, DEFAULT_ROTATION.z);
+  group.userData.visualGroup = visualGroup;
   group.userData.physicsRadius = Math.max(gridMetrics.scaledVisibleWidth, gridMetrics.scaledVisibleHeight) / 2;
   group.userData.physicsHalfWidth = gridMetrics.scaledVisibleWidth / 2;
   group.userData.physicsHalfHeight = gridMetrics.scaledVisibleHeight / 2;
@@ -498,6 +650,7 @@ const createPlushMesh = (imageUri: string) => {
     cells: grid.cells,
     centerCol: gridMetrics.centerCol,
     centerRow: gridMetrics.centerRow,
+    collisionPoints: createCollisionSamplePoints(grid),
     cols: grid.cols,
     rows: grid.rows,
     scaledHeight: gridMetrics.scaledHeight,
@@ -529,35 +682,86 @@ const getRotatedHalfExtents = (physics: PhysicsState, rotationZ: number) => {
   };
 };
 
+const getVisualDepthForIndex = (index: number, totalCount: number) =>
+  THREE.MathUtils.clamp((index - (totalCount - 1) / 2) * PLUSH_DEPTH_SPACING, -PLUSH_MAX_DEPTH, PLUSH_MAX_DEPTH);
+
+const createPhysicsState = (): PhysicsState => ({
+  angularVelocity: new THREE.Vector3(),
+  dragAnchor: new THREE.Vector3(),
+  dragging: false,
+  grabOffset: new THREE.Vector3(),
+  grabLocalOffset: new THREE.Vector3(),
+  halfHeight: PLUSH_TARGET_SIZE / 2,
+  halfWidth: PLUSH_TARGET_SIZE / 2,
+  lastFrameTime: null,
+  position: new THREE.Vector3(),
+  radius: PLUSH_TARGET_SIZE / 2,
+  velocity: new THREE.Vector3(),
+});
+
+const createSoftnessState = (): PlushSoftnessState => ({
+  bend: new THREE.Vector2(),
+  bendVelocity: new THREE.Vector2(),
+  dentAmount: 0,
+  dentCenter: new THREE.Vector2(0, -1),
+  dentNormal: new THREE.Vector2(0, 1),
+  dentVelocity: 0,
+  scale: new THREE.Vector3(1, 1, 1),
+  scaleVelocity: new THREE.Vector3(),
+  wobbleAngle: 0,
+  wobbleVelocity: 0,
+});
+
 const clampPlushToBounds = (physics: PhysicsState, state: SceneState, rotationZ = 0) => {
   const halfExtents = getRotatedHalfExtents(physics, rotationZ);
   const maxX = Math.max(0, state.viewportWorldWidth / 2 - halfExtents.x);
   const maxY = Math.max(0, state.viewportWorldHeight / 2 - halfExtents.y);
   let isTouchingFloor = false;
+  const impacts: PlushImpact[] = [];
 
   if (physics.position.x < -maxX) {
+    const impactStrength = Math.abs(physics.velocity.x);
     physics.position.x = -maxX;
     physics.velocity.x = Math.abs(physics.velocity.x) * PHYSICS_BOUNCE;
     physics.angularVelocity.z += Math.abs(physics.velocity.y) * 0.08;
+
+    if (impactStrength >= plushSoftnessTuning.impactThreshold) {
+      impacts.push({ normal: new THREE.Vector3(1, 0, 0), strength: impactStrength });
+    }
   } else if (physics.position.x > maxX) {
+    const impactStrength = Math.abs(physics.velocity.x);
     physics.position.x = maxX;
     physics.velocity.x = -Math.abs(physics.velocity.x) * PHYSICS_BOUNCE;
     physics.angularVelocity.z -= Math.abs(physics.velocity.y) * 0.08;
+
+    if (impactStrength >= plushSoftnessTuning.impactThreshold) {
+      impacts.push({ normal: new THREE.Vector3(-1, 0, 0), strength: impactStrength });
+    }
   }
 
   if (physics.position.y < -maxY) {
+    const impactStrength = Math.abs(physics.velocity.y);
     physics.position.y = -maxY;
     physics.velocity.y = Math.abs(physics.velocity.y) * PHYSICS_BOUNCE;
     physics.velocity.x *= PHYSICS_FLOOR_FRICTION;
     physics.angularVelocity.multiplyScalar(PHYSICS_FLOOR_ANGULAR_DAMPING);
     isTouchingFloor = true;
+
+    if (impactStrength >= plushSoftnessTuning.impactThreshold) {
+      impacts.push({ normal: new THREE.Vector3(0, 1, 0), strength: impactStrength });
+    }
   } else if (physics.position.y > maxY) {
+    const impactStrength = Math.abs(physics.velocity.y);
     physics.position.y = maxY;
     physics.velocity.y = -Math.abs(physics.velocity.y) * PHYSICS_BOUNCE;
     physics.angularVelocity.z -= physics.velocity.x * 0.08;
+
+    if (impactStrength >= plushSoftnessTuning.impactThreshold) {
+      impacts.push({ normal: new THREE.Vector3(0, -1, 0), strength: impactStrength });
+    }
   }
 
-  return isTouchingFloor;
+  return { impacts, isTouchingFloor };
 };
 
 const applyAngularVelocity = (mesh: THREE.Group, angularVelocity: THREE.Vector3, deltaSeconds: number) => {
@@ -581,7 +785,211 @@ const clampAngularVelocity = (angularVelocity: THREE.Vector3) => {
   }
 };
 
-const applyPhysicsFrame = (mesh: THREE.Group, physics: PhysicsState, state: SceneState, frameTime: number) => {
+const dampRestingFloorMotion = (physics: PhysicsState) => {
+  physics.velocity.x *= PHYSICS_FLOOR_REST_DAMPING;
+  physics.velocity.y = Math.max(0, physics.velocity.y);
+  physics.angularVelocity.multiplyScalar(PHYSICS_FLOOR_REST_ANGULAR_DAMPING);
+
+  if (
+    Math.abs(physics.velocity.x) < PHYSICS_SLEEP_VELOCITY &&
+    Math.abs(physics.velocity.y) < PHYSICS_SLEEP_VELOCITY &&
+    physics.angularVelocity.length() < PHYSICS_SLEEP_ANGULAR_VELOCITY
+  ) {
+    physics.velocity.set(0, 0, 0);
+    physics.angularVelocity.set(0, 0, 0);
+  }
+};
+
+const getPlushVisualGroup = (mesh: THREE.Group) => mesh.userData.visualGroup as THREE.Group | undefined;
+
+const resetPlushSoftness = (mesh: THREE.Group | null, softness: PlushSoftnessState) => {
+  softness.bend.set(0, 0);
+  softness.bendVelocity.set(0, 0);
+  softness.dentAmount = 0;
+  softness.dentCenter.set(0, -1);
+  softness.dentNormal.set(0, 1);
+  softness.dentVelocity = 0;
+  softness.scale.set(1, 1, 1);
+  softness.scaleVelocity.set(0, 0, 0);
+  softness.wobbleAngle = 0;
+  softness.wobbleVelocity = 0;
+
+  const visualGroup = mesh ? getPlushVisualGroup(mesh) : undefined;
+
+  visualGroup?.scale.set(1, 1, 1);
+  visualGroup?.rotation.set(0, 0, 0);
+
+  if (mesh) {
+    updateGpuBend(mesh, softness);
+  }
+};
+
+const updateGpuBend = (mesh: THREE.Group, softness: PlushSoftnessState) => {
+  const visualGroup = getPlushVisualGroup(mesh);
+
+  if (!visualGroup) {
+    return;
+  }
+
+  const bendStrength = Math.min(1, softness.bend.length() / plushSoftnessTuning.maxBend);
+
+  visualGroup.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) {
+      return;
+    }
+
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+
+    materials.forEach((material) => {
+      const bendMaterial = material as PlushBendMaterial;
+      bendMaterial.userData.plushBendUniform?.value.copy(softness.bend);
+      bendMaterial.userData.plushDentCenterUniform?.value.copy(softness.dentCenter);
+      bendMaterial.userData.plushDentNormalUniform?.value.copy(softness.dentNormal);
+
+      if (bendMaterial.userData.plushBendStrengthUniform) {
+        bendMaterial.userData.plushBendStrengthUniform.value = bendStrength;
+      }
+
+      if (bendMaterial.userData.plushDentAmountUniform) {
+        bendMaterial.userData.plushDentAmountUniform.value = softness.dentAmount;
+      }
+    });
+  });
+};
+
+const registerPlushImpact = (mesh: THREE.Group, softness: PlushSoftnessState, impact: PlushImpact) => {
+  const normalizedStrength = Math.min(1, impact.strength / plushSoftnessTuning.impactStrengthForMaxSquash);
+  const squash = Math.min(
+    plushSoftnessTuning.maxSquash,
+    normalizedStrength * plushSoftnessTuning.impactSquashAmount
+  );
+
+  if (squash <= 0) {
+    return;
+  }
+
+  const localNormal = impact.normal.clone().applyQuaternion(mesh.quaternion.clone().invert()).normalize();
+  const axisWeights = new THREE.Vector3(Math.abs(localNormal.x), Math.abs(localNormal.y), Math.abs(localNormal.z));
+  const totalWeight = axisWeights.x + axisWeights.y + axisWeights.z || 1;
+  axisWeights.multiplyScalar(1 / totalWeight);
+
+  const stretch = squash * plushSoftnessTuning.impactStretchAmount;
+  const impactScale = new THREE.Vector3(
+    1 - squash * axisWeights.x + stretch * (1 - axisWeights.x) * 0.5,
+    1 - squash * axisWeights.y + stretch * (1 - axisWeights.y) * 0.5,
+    1 - squash * axisWeights.z + stretch * (1 - axisWeights.z) * 0.35
+  );
+
+  impactScale.set(
+    THREE.MathUtils.clamp(impactScale.x, 1 - plushSoftnessTuning.maxSquash, 1 + plushSoftnessTuning.maxSquash),
+    THREE.MathUtils.clamp(impactScale.y, 1 - plushSoftnessTuning.maxSquash, 1 + plushSoftnessTuning.maxSquash),
+    THREE.MathUtils.clamp(impactScale.z, 1 - plushSoftnessTuning.maxSquash, 1 + plushSoftnessTuning.maxSquash * 0.75)
+  );
+
+  softness.scale.lerp(impactScale, 0.82);
+  softness.scaleVelocity.addScaledVector(
+    new THREE.Vector3(1, 1, 1).sub(impactScale),
+    1 / plushSoftnessTuning.squashDuration
+  );
+
+  const dentNormal = new THREE.Vector2(localNormal.x, localNormal.y);
+
+  if (dentNormal.lengthSq() > 0.0001) {
+    dentNormal.normalize();
+    softness.dentNormal.copy(dentNormal);
+    softness.dentCenter.copy(dentNormal).multiplyScalar(-1);
+    softness.dentAmount = Math.min(
+      plushSoftnessTuning.maxDent,
+      normalizedStrength * plushSoftnessTuning.impactDentAmount
+    );
+    softness.dentVelocity += softness.dentAmount * 12;
+  }
+
+  const wobbleDirection = Math.sign(localNormal.x || localNormal.y || 1);
+  softness.wobbleVelocity += wobbleDirection * normalizedStrength * plushSoftnessTuning.wobbleAmount * 22;
+};
+
+const applyPlushSoftnessFrame = (
+  mesh: THREE.Group,
+  physics: PhysicsState,
+  softness: PlushSoftnessState,
+  deltaSeconds: number
+) => {
+  const visualGroup = getPlushVisualGroup(mesh);
+
+  if (!visualGroup) {
+    return;
+  }
+
+  const identityScale = new THREE.Vector3(1, 1, 1);
+  const springForce = identityScale.sub(softness.scale).multiplyScalar(plushSoftnessTuning.returnSpringStrength);
+  softness.scaleVelocity.addScaledVector(springForce, deltaSeconds);
+  softness.scaleVelocity.multiplyScalar(Math.exp(-plushSoftnessTuning.scaleDamping * deltaSeconds));
+  softness.scale.addScaledVector(softness.scaleVelocity, deltaSeconds);
+
+  softness.scale.set(
+    THREE.MathUtils.clamp(softness.scale.x, 1 - plushSoftnessTuning.maxSquash, 1 + plushSoftnessTuning.maxSquash),
+    THREE.MathUtils.clamp(softness.scale.y, 1 - plushSoftnessTuning.maxSquash, 1 + plushSoftnessTuning.maxSquash),
+    THREE.MathUtils.clamp(softness.scale.z, 1 - plushSoftnessTuning.maxSquash, 1 + plushSoftnessTuning.maxSquash)
+  );
+
+  const wobbleForce = -softness.wobbleAngle * plushSoftnessTuning.wobbleSpringStrength;
+  softness.wobbleVelocity += wobbleForce * deltaSeconds;
+  softness.wobbleVelocity *= Math.exp(-plushSoftnessTuning.wobbleDamping * deltaSeconds);
+  softness.wobbleAngle += softness.wobbleVelocity * deltaSeconds;
+
+  const dentForce = -softness.dentAmount * plushSoftnessTuning.dentSpringStrength;
+  softness.dentVelocity += dentForce * deltaSeconds;
+  softness.dentVelocity *= Math.exp(-plushSoftnessTuning.dentDamping * deltaSeconds);
+  softness.dentAmount += softness.dentVelocity * deltaSeconds;
+
+  if (softness.dentAmount < 0.001 && Math.abs(softness.dentVelocity) < 0.001) {
+    softness.dentAmount = 0;
+    softness.dentVelocity = 0;
+  }
+
+  softness.dentAmount = THREE.MathUtils.clamp(softness.dentAmount, 0, plushSoftnessTuning.maxDent);
+
+  const localVelocity = physics.velocity.clone().applyQuaternion(mesh.quaternion.clone().invert());
+  const targetBend = new THREE.Vector2(
+    THREE.MathUtils.clamp(
+      (-localVelocity.x * plushSoftnessTuning.velocityBendAmount +
+        physics.angularVelocity.z * plushSoftnessTuning.spinBendAmount) *
+        plushSoftnessTuning.bodyFlexAmount,
+      -plushSoftnessTuning.maxBend,
+      plushSoftnessTuning.maxBend
+    ),
+    THREE.MathUtils.clamp(
+      -localVelocity.y * plushSoftnessTuning.velocityBendAmount * plushSoftnessTuning.bodyFlexAmount,
+      -plushSoftnessTuning.maxBend,
+      plushSoftnessTuning.maxBend
+    )
+  );
+  const bendForce = targetBend.sub(softness.bend).multiplyScalar(plushSoftnessTuning.bendSpringStrength);
+  softness.bendVelocity.addScaledVector(bendForce, deltaSeconds);
+  softness.bendVelocity.multiplyScalar(Math.exp(-plushSoftnessTuning.bendDamping * deltaSeconds));
+  softness.bend.addScaledVector(softness.bendVelocity, deltaSeconds);
+
+  if (softness.bend.length() > plushSoftnessTuning.maxBend) {
+    softness.bend.setLength(plushSoftnessTuning.maxBend);
+  }
+
+  visualGroup.scale.copy(softness.scale);
+  visualGroup.rotation.z = THREE.MathUtils.clamp(
+    softness.wobbleAngle,
+    -plushSoftnessTuning.wobbleAmount,
+    plushSoftnessTuning.wobbleAmount
+  );
+  updateGpuBend(mesh, softness);
+};
+
+const applyPhysicsFrame = (
+  mesh: THREE.Group,
+  physics: PhysicsState,
+  softness: PlushSoftnessState,
+  state: SceneState,
+  frameTime: number
+) => {
   if (physics.lastFrameTime === null) {
     physics.lastFrameTime = frameTime;
     return;
@@ -606,7 +1014,9 @@ const applyPhysicsFrame = (mesh: THREE.Group, physics: PhysicsState, state: Scen
 
     const nextGrabWorldOffset = physics.grabLocalOffset.clone().applyQuaternion(mesh.quaternion);
     physics.position.copy(physics.dragAnchor).sub(nextGrabWorldOffset);
+    physics.position.z = physics.position.z || mesh.position.z;
     physics.velocity.subVectors(physics.position, previousPosition).multiplyScalar(1 / Math.max(deltaSeconds, 0.001));
+    physics.velocity.z = 0;
   } else {
     physics.velocity.y -= PHYSICS_GRAVITY * deltaSeconds;
     physics.position.addScaledVector(physics.velocity, deltaSeconds);
@@ -615,7 +1025,9 @@ const applyPhysicsFrame = (mesh: THREE.Group, physics: PhysicsState, state: Scen
     applyAngularVelocity(mesh, physics.angularVelocity, deltaSeconds);
     physics.angularVelocity.multiplyScalar(PHYSICS_ANGULAR_DAMPING);
 
-    const isTouchingFloor = clampPlushToBounds(physics, state, mesh.rotation.z);
+    const { impacts, isTouchingFloor } = clampPlushToBounds(physics, state, mesh.rotation.z);
+
+    impacts.forEach((impact) => registerPlushImpact(mesh, softness, impact));
 
     if (isTouchingFloor) {
       const tallness = Math.max(0, (physics.halfHeight - physics.halfWidth) / Math.max(physics.halfHeight, 0.001));
@@ -630,66 +1042,259 @@ const applyPhysicsFrame = (mesh: THREE.Group, physics: PhysicsState, state: Scen
         physics.velocity.set(0, 0, 0);
         physics.angularVelocity.set(0, 0, 0);
       }
-    }
-  }
 
-  mesh.position.copy(physics.position);
-};
-
-const isTouchOnPlush = (
-  state: SceneState,
-  physics: PhysicsState,
-  layout: { width: number; height: number },
-  event: GestureResponderEvent
-) => {
-  const mesh = state.mesh;
-  const hitMask = mesh?.userData.hitMask as PlushHitMask | undefined;
-
-  if (!mesh || !hitMask) {
-    return false;
-  }
-
-  const touchPoint = getWorldPoint(state, layout, event.nativeEvent.locationX, event.nativeEvent.locationY);
-  const localPoint = touchPoint
-    .sub(physics.position)
-    .applyQuaternion(mesh.quaternion.clone().invert());
-  const gridCol = Math.floor((localPoint.x / hitMask.scaledWidth) * hitMask.cols + hitMask.centerCol);
-  const gridRow = Math.floor(hitMask.centerRow - (localPoint.y / hitMask.scaledHeight) * hitMask.rows);
-
-  for (let row = gridRow - 1; row <= gridRow + 1; row += 1) {
-    for (let col = gridCol - 1; col <= gridCol + 1; col += 1) {
-      if (row >= 0 && row < hitMask.rows && col >= 0 && col < hitMask.cols && hitMask.cells[row][col]) {
-        return true;
+      if (physics.velocity.length() < PHYSICS_PLUSH_RESTING_CONTACT_SPEED) {
+        dampRestingFloorMotion(physics);
       }
     }
   }
 
-  return false;
+  applyPlushSoftnessFrame(mesh, physics, softness, deltaSeconds);
+  physics.velocity.z = 0;
+  mesh.position.copy(physics.position);
 };
 
-export function PlushMeshViewer({ imageUri, physicsEnabled = false }: PlushMeshViewerProps) {
+const isLocalPointInsideHitMask = (localPoint: THREE.Vector3, hitMask: PlushHitMask) => {
+  const gridCol = Math.floor((localPoint.x / hitMask.scaledWidth) * hitMask.cols + hitMask.centerCol);
+  const gridRow = Math.floor(hitMask.centerRow - (localPoint.y / hitMask.scaledHeight) * hitMask.rows);
+
+  return (
+    gridRow >= 0 &&
+    gridRow < hitMask.rows &&
+    gridCol >= 0 &&
+    gridCol < hitMask.cols &&
+    hitMask.cells[gridRow][gridCol]
+  );
+};
+
+const getScreenWorldPoint = (runtime: PlushRuntime, localPoint: THREE.Vector3) =>
+  localPoint
+    .clone()
+    .applyAxisAngle(new THREE.Vector3(0, 0, 1), runtime.mesh.rotation.z)
+    .add(runtime.physics.position);
+
+const getScreenLocalPoint = (runtime: PlushRuntime, worldPoint: THREE.Vector3) =>
+  worldPoint
+    .clone()
+    .sub(runtime.physics.position)
+    .applyAxisAngle(new THREE.Vector3(0, 0, 1), -runtime.mesh.rotation.z);
+
+const getMaskOverlapCount = (source: PlushRuntime, target: PlushRuntime) => {
+  const sourceHitMask = source.mesh.userData.hitMask as PlushHitMask | undefined;
+  const targetHitMask = target.mesh.userData.hitMask as PlushHitMask | undefined;
+
+  if (!sourceHitMask || !targetHitMask) {
+    return 0;
+  }
+
+  let overlapCount = 0;
+
+  for (const samplePoint of sourceHitMask.collisionPoints) {
+    const worldPoint = getScreenWorldPoint(source, samplePoint);
+    const targetLocalPoint = getScreenLocalPoint(target, worldPoint);
+
+    if (isLocalPointInsideHitMask(targetLocalPoint, targetHitMask)) {
+      overlapCount += 1;
+    }
+  }
+
+  return overlapCount;
+};
+
+const resolvePlushCollision = (a: PlushRuntime, b: PlushRuntime) => {
+  const delta = new THREE.Vector2(
+    b.physics.position.x - a.physics.position.x,
+    b.physics.position.y - a.physics.position.y
+  );
+  const distance = Math.max(delta.length(), 0.0001);
+  const radiusA = a.physics.radius * PHYSICS_PLUSH_COLLISION_RADIUS_SCALE;
+  const radiusB = b.physics.radius * PHYSICS_PLUSH_COLLISION_RADIUS_SCALE;
+  const minDistance = radiusA + radiusB;
+
+  if (distance >= minDistance * 1.12) {
+    return;
+  }
+
+  const overlapCount = getMaskOverlapCount(a, b) + getMaskOverlapCount(b, a);
+
+  if (overlapCount === 0) {
+    return;
+  }
+
+  const normal = delta.multiplyScalar(1 / distance);
+  const overlap = Math.min(0.12, Math.max(0.018, (minDistance - distance) * 0.16 + overlapCount * 0.0008));
+  const correction = normal.clone().multiplyScalar(overlap * PHYSICS_PLUSH_COLLISION_PUSH);
+
+  if (!a.physics.dragging) {
+    a.physics.position.x -= correction.x * 0.5;
+    a.physics.position.y -= correction.y * 0.5;
+  }
+
+  if (!b.physics.dragging) {
+    b.physics.position.x += correction.x * 0.5;
+    b.physics.position.y += correction.y * 0.5;
+  }
+
+  a.physics.position.z = a.depthZ;
+  b.physics.position.z = b.depthZ;
+
+  const relativeVelocity = new THREE.Vector2(
+    b.physics.velocity.x - a.physics.velocity.x,
+    b.physics.velocity.y - a.physics.velocity.y
+  );
+  const separatingSpeed = relativeVelocity.dot(normal);
+  const contactSpeed = Math.abs(separatingSpeed);
+
+  if (separatingSpeed > 0) {
+    return;
+  }
+
+  if (contactSpeed < PHYSICS_PLUSH_RESTING_CONTACT_SPEED) {
+    if (!a.physics.dragging) {
+      a.physics.velocity.multiplyScalar(PHYSICS_PLUSH_CONTACT_DAMPING);
+      a.physics.angularVelocity.multiplyScalar(PHYSICS_PLUSH_CONTACT_DAMPING);
+    }
+
+    if (!b.physics.dragging) {
+      b.physics.velocity.multiplyScalar(PHYSICS_PLUSH_CONTACT_DAMPING);
+      b.physics.angularVelocity.multiplyScalar(PHYSICS_PLUSH_CONTACT_DAMPING);
+    }
+
+    return;
+  }
+
+  const impulseStrength = -(1 + PHYSICS_PLUSH_COLLISION_BOUNCE) * separatingSpeed * 0.5;
+  const impulse = normal.clone().multiplyScalar(impulseStrength);
+
+  if (!a.physics.dragging) {
+    a.physics.velocity.x -= impulse.x;
+    a.physics.velocity.y -= impulse.y;
+    a.physics.angularVelocity.z -= impulse.y * 0.08;
+  }
+
+  if (!b.physics.dragging) {
+    b.physics.velocity.x += impulse.x;
+    b.physics.velocity.y += impulse.y;
+    b.physics.angularVelocity.z += impulse.y * 0.08;
+  }
+
+  a.physics.velocity.z = 0;
+  b.physics.velocity.z = 0;
+
+  const impactStrength = contactSpeed;
+
+  if (impactStrength >= plushSoftnessTuning.impactThreshold) {
+    registerPlushImpact(a.mesh, a.softness, {
+      normal: new THREE.Vector3(-normal.x, -normal.y, 0),
+      strength: impactStrength,
+    });
+    registerPlushImpact(b.mesh, b.softness, {
+      normal: new THREE.Vector3(normal.x, normal.y, 0),
+      strength: impactStrength,
+    });
+  }
+};
+
+const resolvePlushCollisions = (runtimes: PlushRuntime[]) => {
+  for (let firstIndex = 0; firstIndex < runtimes.length; firstIndex += 1) {
+    for (let secondIndex = firstIndex + 1; secondIndex < runtimes.length; secondIndex += 1) {
+      resolvePlushCollision(runtimes[firstIndex], runtimes[secondIndex]);
+    }
+  }
+};
+
+const settleRestingPlushes = (runtimes: PlushRuntime[], state: SceneState) => {
+  runtimes.forEach((runtime) => {
+    const halfExtents = getRotatedHalfExtents(runtime.physics, runtime.mesh.rotation.z);
+    const floorY = -(state.viewportWorldHeight / 2 - halfExtents.y);
+    const isOnFloor = runtime.physics.position.y <= floorY + 0.012;
+
+    if (!runtime.physics.dragging && isOnFloor && runtime.physics.velocity.length() < PHYSICS_PLUSH_RESTING_CONTACT_SPEED) {
+      dampRestingFloorMotion(runtime.physics);
+    }
+  });
+};
+
+const createPlushRuntime = (
+  plush: PlushMeshViewerProps['plushes'][number],
+  state: SceneState,
+  index: number,
+  totalCount: number,
+  physicsEnabled: boolean
+) => {
+  const mesh = createPlushMesh(plush.imageUri);
+  const physics = createPhysicsState();
+  const softness = createSoftnessState();
+  const depthZ = getVisualDepthForIndex(index, totalCount);
+
+  state.scene?.add(mesh);
+
+  physics.radius = mesh.userData.physicsRadius ?? PLUSH_TARGET_SIZE / 2;
+  physics.halfWidth = mesh.userData.physicsHalfWidth ?? PLUSH_TARGET_SIZE / 2;
+  physics.halfHeight = mesh.userData.physicsHalfHeight ?? PLUSH_TARGET_SIZE / 2;
+  resetPlushSoftness(mesh, softness);
+
+  const startHalfExtents = getRotatedHalfExtents(physics, mesh.rotation.z);
+  const startX = (index - (totalCount - 1) / 2) * PLUSH_TARGET_SIZE * 0.74;
+  const startY = Math.max(0, state.viewportWorldHeight / 2 - startHalfExtents.y);
+  physics.position.set(startX, physicsEnabled ? startY : 0, depthZ);
+  physics.velocity.set(0, physicsEnabled ? -0.35 : 0, 0);
+  mesh.position.copy(physics.position);
+
+  return { depthZ, id: plush.id, mesh, physics, softness };
+};
+
+const isTouchOnPlush = (
+  state: SceneState,
+  runtimes: PlushRuntime[],
+  layout: { width: number; height: number },
+  event: GestureResponderEvent
+) => {
+  const touchPoint = getWorldPoint(state, layout, event.nativeEvent.locationX, event.nativeEvent.locationY);
+  const touchableRuntimes = [...runtimes].sort((a, b) => b.depthZ - a.depthZ);
+
+  for (const runtime of touchableRuntimes) {
+    const mesh = runtime.mesh;
+    const physics = runtime.physics;
+    const hitMask = mesh?.userData.hitMask as PlushHitMask | undefined;
+
+    if (!mesh || !hitMask) {
+      continue;
+    }
+
+    const localPoint = touchPoint
+      .clone()
+      .sub(physics.position)
+      .applyAxisAngle(new THREE.Vector3(0, 0, 1), -mesh.rotation.z);
+
+    const gridCol = Math.floor((localPoint.x / hitMask.scaledWidth) * hitMask.cols + hitMask.centerCol);
+    const gridRow = Math.floor(hitMask.centerRow - (localPoint.y / hitMask.scaledHeight) * hitMask.rows);
+
+    for (let row = gridRow - 2; row <= gridRow + 2; row += 1) {
+      for (let col = gridCol - 2; col <= gridCol + 2; col += 1) {
+        if (row >= 0 && row < hitMask.rows && col >= 0 && col < hitMask.cols && hitMask.cells[row][col]) {
+          return runtime;
+        }
+      }
+    }
+  }
+
+  return null;
+};
+
+export function PlushMeshViewer({ plushes, physicsEnabled = false }: PlushMeshViewerProps) {
   const stateRef = useRef<SceneState>({
     animationFrame: null,
     camera: null,
     mesh: null,
     renderer: null,
+    scene: null,
     viewportWorldHeight: 1,
     viewportWorldWidth: 1,
   });
   const layoutRef = useRef({ width: 1, height: 1 });
-  const physicsRef = useRef<PhysicsState>({
-    angularVelocity: new THREE.Vector3(),
-    dragAnchor: new THREE.Vector3(),
-    dragging: false,
-    grabOffset: new THREE.Vector3(),
-    grabLocalOffset: new THREE.Vector3(),
-    halfHeight: PLUSH_TARGET_SIZE / 2,
-    halfWidth: PLUSH_TARGET_SIZE / 2,
-    lastFrameTime: null,
-    position: new THREE.Vector3(),
-    radius: PLUSH_TARGET_SIZE / 2,
-    velocity: new THREE.Vector3(),
-  });
+  const runtimesRef = useRef<PlushRuntime[]>([]);
+  const activeRuntimeRef = useRef<PlushRuntime | null>(null);
   const physicsEnabledRef = useRef(physicsEnabled);
   const rotationRef = useRef(DEFAULT_ROTATION);
   const gestureStartRotationRef = useRef(DEFAULT_ROTATION);
@@ -706,19 +1311,24 @@ export function PlushMeshViewer({ imageUri, physicsEnabled = false }: PlushMeshV
     () =>
       PanResponder.create({
         onStartShouldSetPanResponder: (event) =>
-          isTouchOnPlush(stateRef.current, physicsRef.current, layoutRef.current, event),
+          Boolean(isTouchOnPlush(stateRef.current, runtimesRef.current, layoutRef.current, event)),
         onMoveShouldSetPanResponder: (event) =>
-          isTouchOnPlush(stateRef.current, physicsRef.current, layoutRef.current, event),
+          Boolean(isTouchOnPlush(stateRef.current, runtimesRef.current, layoutRef.current, event)),
         onPanResponderGrant: (event: GestureResponderEvent) => {
-          if (physicsEnabled && stateRef.current.mesh) {
-            const physics = physicsRef.current;
-            const mesh = stateRef.current.mesh;
+          const runtime = isTouchOnPlush(stateRef.current, runtimesRef.current, layoutRef.current, event);
+
+          activeRuntimeRef.current = runtime;
+
+          if (physicsEnabled && runtime) {
+            const physics = runtime.physics;
+            const mesh = runtime.mesh;
             const touchPoint = getWorldPoint(
               stateRef.current,
               layoutRef.current,
               event.nativeEvent.locationX,
               event.nativeEvent.locationY
             );
+            touchPoint.z = runtime.depthZ;
 
             physics.dragging = true;
             physics.dragAnchor.copy(touchPoint);
@@ -735,24 +1345,30 @@ export function PlushMeshViewer({ imageUri, physicsEnabled = false }: PlushMeshV
           gestureStartRotationRef.current = rotationRef.current;
         },
         onPanResponderMove: (event, gesture) => {
-          if (physicsEnabled && stateRef.current.mesh) {
-            const physics = physicsRef.current;
+          const activeRuntime = activeRuntimeRef.current;
+
+          if (physicsEnabled && activeRuntime) {
+            const physics = activeRuntime.physics;
+            const mesh = activeRuntime.mesh;
             const touchPoint = getWorldPoint(
               stateRef.current,
               layoutRef.current,
               event.nativeEvent.locationX,
               event.nativeEvent.locationY
             );
+            touchPoint.z = activeRuntime.depthZ;
             const previousPosition = physics.position.clone();
             const anchorVelocity = touchPoint.clone().sub(physics.dragAnchor).multiplyScalar(60);
 
             physics.dragAnchor.copy(touchPoint);
             physics.position
               .copy(touchPoint)
-              .sub(physics.grabLocalOffset.clone().applyQuaternion(stateRef.current.mesh.quaternion));
+              .sub(physics.grabLocalOffset.clone().applyQuaternion(mesh.quaternion));
+            physics.position.z = activeRuntime.depthZ;
             physics.velocity.subVectors(physics.position, previousPosition).multiplyScalar(60);
+            physics.velocity.z = 0;
 
-            const grabWorldOffset = physics.grabLocalOffset.clone().applyQuaternion(stateRef.current.mesh.quaternion);
+            const grabWorldOffset = physics.grabLocalOffset.clone().applyQuaternion(mesh.quaternion);
             const dragTorqueZ = grabWorldOffset.x * anchorVelocity.y - grabWorldOffset.y * anchorVelocity.x;
 
             physics.angularVelocity.x = 0;
@@ -760,7 +1376,7 @@ export function PlushMeshViewer({ imageUri, physicsEnabled = false }: PlushMeshV
             physics.angularVelocity.z += dragTorqueZ * PHYSICS_DRAG_ROTATION;
             clampAngularVelocity(physics.angularVelocity);
 
-            stateRef.current.mesh.position.copy(physics.position);
+            mesh.position.copy(physics.position);
             return;
           }
 
@@ -776,11 +1392,14 @@ export function PlushMeshViewer({ imageUri, physicsEnabled = false }: PlushMeshV
           }
         },
         onPanResponderRelease: (_, gesture) => {
-          if (!physicsEnabled) {
+          const activeRuntime = activeRuntimeRef.current;
+
+          if (!physicsEnabled || !activeRuntime) {
+            activeRuntimeRef.current = null;
             return;
           }
 
-          const physics = physicsRef.current;
+          const physics = activeRuntime.physics;
           const state = stateRef.current;
           const releaseVelocity = new THREE.Vector3(
             gesture.vx * state.viewportWorldWidth * 0.34,
@@ -789,7 +1408,7 @@ export function PlushMeshViewer({ imageUri, physicsEnabled = false }: PlushMeshV
           );
           const grabWorldOffset = physics.grabLocalOffset
             .clone()
-            .applyQuaternion(stateRef.current.mesh?.quaternion ?? new THREE.Quaternion());
+            .applyQuaternion(activeRuntime.mesh.quaternion);
           const torque = grabWorldOffset.cross(releaseVelocity);
           const tumble = new THREE.Vector3(
             -releaseVelocity.y,
@@ -803,9 +1422,13 @@ export function PlushMeshViewer({ imageUri, physicsEnabled = false }: PlushMeshV
           physics.angularVelocity.addScaledVector(torque, PHYSICS_RELEASE_TORQUE);
           physics.angularVelocity.addScaledVector(tumble, PHYSICS_THROW_TUMBLE);
           clampAngularVelocity(physics.angularVelocity);
+          activeRuntimeRef.current = null;
         },
         onPanResponderTerminate: () => {
-          physicsRef.current.dragging = false;
+          if (activeRuntimeRef.current) {
+            activeRuntimeRef.current.physics.dragging = false;
+            activeRuntimeRef.current = null;
+          }
         },
       }),
     [physicsEnabled]
@@ -824,27 +1447,53 @@ export function PlushMeshViewer({ imageUri, physicsEnabled = false }: PlushMeshV
   }, []);
 
   useEffect(() => {
-    const mesh = stateRef.current.mesh;
+    runtimesRef.current.forEach((runtime, index) => {
+      const startHalfExtents = getRotatedHalfExtents(runtime.physics, runtime.mesh.rotation.z);
+      const startX = (index - (runtimesRef.current.length - 1) / 2) * PLUSH_TARGET_SIZE * 0.74;
+      const startY = Math.max(0, stateRef.current.viewportWorldHeight / 2 - startHalfExtents.y);
+      runtime.physics.dragging = false;
+      runtime.physics.lastFrameTime = null;
+      runtime.physics.velocity.set(0, physicsEnabled ? -0.35 : 0, 0);
+      runtime.physics.angularVelocity.set(0, 0, 0);
+      runtime.depthZ = getVisualDepthForIndex(index, runtimesRef.current.length);
+      runtime.physics.position.set(startX, physicsEnabled ? startY : 0, runtime.depthZ);
+      runtime.mesh.position.copy(runtime.physics.position);
+      resetPlushSoftness(runtime.mesh, runtime.softness);
 
-    if (!mesh) {
+    if (!physicsEnabled) {
+        runtime.mesh.rotation.set(DEFAULT_ROTATION.x, DEFAULT_ROTATION.y, DEFAULT_ROTATION.z);
+      rotationRef.current = DEFAULT_ROTATION;
+    }
+    });
+  }, [physicsEnabled]);
+
+  useEffect(() => {
+    if (!stateRef.current.scene) {
       return;
     }
 
-    const physics = physicsRef.current;
-    const startHalfExtents = getRotatedHalfExtents(physics, mesh.rotation.z);
-    const startY = Math.max(0, stateRef.current.viewportWorldHeight / 2 - startHalfExtents.y);
-    physics.dragging = false;
-    physics.lastFrameTime = null;
-    physics.velocity.set(0, physicsEnabled ? -0.35 : 0, 0);
-    physics.angularVelocity.set(0, 0, 0);
-    physics.position.set(0, physicsEnabled ? startY : 0, 0);
-    mesh.position.copy(physics.position);
+    const existingIds = new Set(runtimesRef.current.map((runtime) => runtime.id));
+    const newPlushes = plushes.filter((plush) => !existingIds.has(plush.id));
+    const baseRuntimeCount = runtimesRef.current.length;
 
-    if (!physicsEnabled) {
-      mesh.rotation.set(DEFAULT_ROTATION.x, DEFAULT_ROTATION.y, DEFAULT_ROTATION.z);
-      rotationRef.current = DEFAULT_ROTATION;
-    }
-  }, [physicsEnabled]);
+    newPlushes.forEach((plush, index) => {
+      runtimesRef.current.push(
+        createPlushRuntime(
+          plush,
+          stateRef.current,
+          baseRuntimeCount + index,
+          plushes.length,
+          physicsEnabledRef.current
+        )
+      );
+    });
+
+    runtimesRef.current.forEach((runtime, index) => {
+      runtime.depthZ = getVisualDepthForIndex(index, runtimesRef.current.length);
+      runtime.physics.position.z = runtime.depthZ;
+      runtime.mesh.position.z = runtime.depthZ;
+    });
+  }, [plushes]);
 
   const handleContextCreate = (gl: ExpoWebGLRenderingContext) => {
     const renderer = new Renderer({ gl, alpha: true, antialias: true }) as unknown as THREE.WebGLRenderer;
@@ -852,6 +1501,7 @@ export function PlushMeshViewer({ imageUri, physicsEnabled = false }: PlushMeshV
     renderer.setClearColor(0xffffff, 0);
 
     const scene = new THREE.Scene();
+    stateRef.current.scene = scene;
     const camera = new THREE.PerspectiveCamera(
       42,
       gl.drawingBufferWidth / gl.drawingBufferHeight,
@@ -864,27 +1514,25 @@ export function PlushMeshViewer({ imageUri, physicsEnabled = false }: PlushMeshV
       2 * camera.position.z * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
     stateRef.current.viewportWorldWidth = stateRef.current.viewportWorldHeight * camera.aspect;
 
-    const mesh = createPlushMesh(imageUri);
-    scene.add(mesh);
-
     stateRef.current.renderer = renderer;
-    stateRef.current.mesh = mesh;
-    physicsRef.current.radius = mesh.userData.physicsRadius ?? PLUSH_TARGET_SIZE / 2;
-    physicsRef.current.halfWidth = mesh.userData.physicsHalfWidth ?? PLUSH_TARGET_SIZE / 2;
-    physicsRef.current.halfHeight = mesh.userData.physicsHalfHeight ?? PLUSH_TARGET_SIZE / 2;
-
-    if (physicsEnabled) {
-      const startHalfExtents = getRotatedHalfExtents(physicsRef.current, mesh.rotation.z);
-      const startY = Math.max(0, stateRef.current.viewportWorldHeight / 2 - startHalfExtents.y);
-      physicsRef.current.position.set(0, startY, 0);
-      physicsRef.current.velocity.set(0, -0.35, 0);
-      mesh.position.copy(physicsRef.current.position);
-    }
+    runtimesRef.current = plushes.map((plush, index) =>
+      createPlushRuntime(plush, stateRef.current, index, plushes.length, physicsEnabled)
+    );
 
     const render = (frameTime: number) => {
       stateRef.current.animationFrame = requestAnimationFrame(render);
       if (physicsEnabledRef.current) {
-        applyPhysicsFrame(mesh, physicsRef.current, stateRef.current, frameTime);
+        runtimesRef.current.forEach((runtime) => {
+          applyPhysicsFrame(runtime.mesh, runtime.physics, runtime.softness, stateRef.current, frameTime);
+          runtime.physics.position.z = runtime.depthZ;
+          runtime.physics.velocity.z = 0;
+        });
+        resolvePlushCollisions(runtimesRef.current);
+        settleRestingPlushes(runtimesRef.current, stateRef.current);
+        runtimesRef.current.forEach((runtime) => {
+          runtime.physics.position.z = runtime.depthZ;
+          runtime.mesh.position.copy(runtime.physics.position);
+        });
       }
       renderer.render(scene, camera);
       gl.endFrameEXP();

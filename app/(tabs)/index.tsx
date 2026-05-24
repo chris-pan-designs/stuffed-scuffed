@@ -5,11 +5,26 @@ import { removeBackground } from '@/lib/backgroundRemoval';
 import { PlushMeshViewer } from '@/components/plush/PlushMeshViewer';
 import { detectOutlineFromPngDataUri, type DetectedOutline } from '@/lib/outlineDetection';
 
+type PlushItem = {
+  id: string;
+  imageUri: string;
+  outline: DetectedOutline;
+};
+
 export default function HomeScreen() {
-  const [cutoutImageUri, setCutoutImageUri] = useState<string | null>(null);
-  const [outline, setOutline] = useState<DetectedOutline | null>(null);
-  const [isPlushConfirmed, setIsPlushConfirmed] = useState(false);
+  const [plushes, setPlushes] = useState<PlushItem[]>([]);
   const [isRemovingBackground, setIsRemovingBackground] = useState(false);
+
+  const addPlush = (imageUri: string) => {
+    setPlushes((currentPlushes) => [
+      ...currentPlushes,
+      {
+        id: `${Date.now()}-${currentPlushes.length}`,
+        imageUri,
+        outline: detectOutlineFromPngDataUri(imageUri),
+      },
+    ]);
+  };
 
   const pickImage = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -30,8 +45,6 @@ export default function HomeScreen() {
     }
 
     setIsRemovingBackground(true);
-    setOutline(null);
-    setIsPlushConfirmed(false);
 
     try {
       const selectedImage = result.assets[0];
@@ -56,8 +69,7 @@ export default function HomeScreen() {
           reader.readAsDataURL(imageBlob);
         });
 
-        setCutoutImageUri(imageDataUri);
-        setOutline(detectOutlineFromPngDataUri(imageDataUri));
+        addPlush(imageDataUri);
         return;
       }
 
@@ -67,8 +79,7 @@ export default function HomeScreen() {
         mimeType: selectedImage.mimeType,
       });
 
-      setCutoutImageUri(cutout.cutoutUri);
-      setOutline(detectOutlineFromPngDataUri(cutout.cutoutUri));
+      addPlush(cutout.cutoutUri);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Something went wrong.';
       Alert.alert('Could not cut out photo', message);
@@ -80,14 +91,9 @@ export default function HomeScreen() {
   return (
     <View style={styles.screen}>
       <View style={styles.stage}>
-        {cutoutImageUri && outline ? (
+        {plushes.length > 0 ? (
           <View style={styles.previewFrame}>
-            <PlushMeshViewer
-              key={cutoutImageUri}
-              imageUri={cutoutImageUri}
-              outline={outline}
-              physicsEnabled={isPlushConfirmed}
-            />
+            <PlushMeshViewer plushes={plushes} physicsEnabled />
           </View>
         ) : null}
 
@@ -98,16 +104,6 @@ export default function HomeScreen() {
           </View>
         ) : null}
       </View>
-
-      {cutoutImageUri && outline && !isPlushConfirmed && !isRemovingBackground ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Confirm plush"
-          onPress={() => setIsPlushConfirmed(true)}
-          style={({ pressed }) => [styles.confirmButton, pressed && styles.confirmButtonPressed]}>
-          <Text style={styles.confirmButtonText}>Confirm plush</Text>
-        </Pressable>
-      ) : null}
 
       <Pressable
         accessibilityRole="button"
@@ -174,35 +170,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.18,
     shadowRadius: 28,
     elevation: 10,
-  },
-  confirmButton: {
-    position: 'absolute',
-    bottom: 144,
-    alignSelf: 'center',
-    minHeight: 58,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 999,
-    backgroundColor: 'rgba(255, 255, 255, 0.92)',
-    borderColor: 'rgba(30, 30, 30, 0.12)',
-    borderWidth: 1,
-    paddingHorizontal: 24,
-    paddingVertical: 14,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.12,
-    shadowRadius: 20,
-    elevation: 8,
-  },
-  confirmButtonPressed: {
-    transform: [{ scale: 0.97 }],
-    backgroundColor: 'rgba(245, 245, 245, 0.94)',
-  },
-  confirmButtonText: {
-    color: '#1D1D1D',
-    fontSize: 19,
-    fontWeight: '800',
-    letterSpacing: 0,
   },
   newPlushButtonPressed: {
     transform: [{ scale: 0.97 }],
