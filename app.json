@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "stuffed-and-scuffed",
+    "name": "Stuffed & Scuffed",
     "slug": "stuffed-and-scuffed",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -43,6 +43,7 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "description": "Turn photo cutouts into cursed plush toys."
   }
 }

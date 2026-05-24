@@ -1,98 +1,222 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import { useState } from 'react';
+import { ActivityIndicator, Alert, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import Svg, { Circle, Path } from 'react-native-svg';
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+import { removeBackground } from '@/lib/backgroundRemoval';
+import { detectOutlineFromPngDataUri, type DetectedOutline } from '@/lib/outlineDetection';
 
 export default function HomeScreen() {
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+  const [cutoutImageUri, setCutoutImageUri] = useState<string | null>(null);
+  const [outline, setOutline] = useState<DetectedOutline | null>(null);
+  const [isRemovingBackground, setIsRemovingBackground] = useState(false);
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+  const pickImage = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+    if (!permission.granted) {
+      Alert.alert('Photo access needed', 'Allow photo access to make a new plush.');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: false,
+      quality: 1,
+    });
+
+    if (result.canceled) {
+      return;
+    }
+
+    setIsRemovingBackground(true);
+    setOutline(null);
+
+    try {
+      const selectedImage = result.assets[0];
+      const isTransparentPng = selectedImage.mimeType === 'image/png';
+
+      if (isTransparentPng) {
+        const response = await fetch(selectedImage.uri);
+        const imageBlob = await response.blob();
+        const imageDataUri = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+
+          reader.onloadend = () => {
+            if (typeof reader.result === 'string') {
+              resolve(reader.result);
+              return;
+            }
+
+            reject(new Error('Could not read the selected PNG.'));
+          };
+
+          reader.onerror = () => reject(new Error('Could not read the selected PNG.'));
+          reader.readAsDataURL(imageBlob);
+        });
+
+        setCutoutImageUri(imageDataUri);
+        setOutline(detectOutlineFromPngDataUri(imageDataUri));
+        return;
+      }
+
+      const cutout = await removeBackground({
+        uri: selectedImage.uri,
+        fileName: selectedImage.fileName,
+        mimeType: selectedImage.mimeType,
+      });
+
+      setCutoutImageUri(cutout.cutoutUri);
+      setOutline(detectOutlineFromPngDataUri(cutout.cutoutUri));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Something went wrong.';
+      Alert.alert('Could not cut out photo', message);
+    } finally {
+      setIsRemovingBackground(false);
+    }
+  };
+
+  return (
+    <View style={styles.screen}>
+      <View style={styles.stage}>
+        {cutoutImageUri ? (
+          <View style={styles.previewFrame}>
+            <Image
+              source={{ uri: cutoutImageUri }}
+              resizeMode="contain"
+              style={styles.previewImage}
+            />
+
+            {outline ? (
+              <Svg
+                pointerEvents="none"
+                style={styles.outlineOverlay}
+                viewBox={`0 0 ${outline.imageWidth} ${outline.imageHeight}`}>
+                {outline.path ? (
+                  <Path
+                    d={outline.path}
+                    fill="none"
+                    stroke="#FF3B8A"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={Math.max(outline.imageWidth, outline.imageHeight) * 0.007}
+                    opacity={0.95}
+                  />
+                ) : null}
+                {outline.points.map((point, index) => (
+                  <Circle
+                    key={`outline-point-${index}`}
+                    cx={point.x}
+                    cy={point.y}
+                    r={Math.max(outline.imageWidth, outline.imageHeight) * 0.0025}
+                    fill="#FF3B8A"
+                    opacity={0.45}
+                  />
+                ))}
+              </Svg>
+            ) : null}
+          </View>
+        ) : null}
+
+        {isRemovingBackground ? (
+          <View style={styles.loadingPill}>
+            <ActivityIndicator color="#FFFFFF" />
+            <Text style={styles.loadingText}>Cutting out...</Text>
+          </View>
+        ) : null}
+      </View>
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Create a new plush"
+        disabled={isRemovingBackground}
+        onPress={pickImage}
+        style={({ pressed }) => [
+          styles.newPlushButton,
+          pressed && styles.newPlushButtonPressed,
+          isRemovingBackground && styles.newPlushButtonDisabled,
+        ]}>
+        <Text style={styles.plus}>+</Text>
+        <Text style={styles.buttonText}>New plush</Text>
+      </Pressable>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
+  screen: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  stage: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 28,
+  },
+  previewFrame: {
+    width: '100%',
+    height: '72%',
+  },
+  previewImage: {
+    width: '100%',
+    height: '100%',
+  },
+  outlineOverlay: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  loadingPill: {
+    position: 'absolute',
+    alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
+    borderRadius: 999,
+    backgroundColor: 'rgba(30, 30, 30, 0.72)',
+    paddingHorizontal: 18,
+    paddingVertical: 12,
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
+  loadingText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
+  newPlushButton: {
     position: 'absolute',
+    bottom: 52,
+    alignSelf: 'center',
+    minHeight: 78,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    borderRadius: 999,
+    backgroundColor: 'rgba(30, 30, 30, 0.72)',
+    paddingHorizontal: 26,
+    paddingVertical: 18,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.18,
+    shadowRadius: 28,
+    elevation: 10,
+  },
+  newPlushButtonPressed: {
+    transform: [{ scale: 0.97 }],
+    backgroundColor: 'rgba(20, 20, 20, 0.78)',
+  },
+  newPlushButtonDisabled: {
+    opacity: 0.65,
+  },
+  plus: {
+    color: '#FFFFFF',
+    fontSize: 38,
+    fontWeight: '300',
+    lineHeight: 40,
+  },
+  buttonText: {
+    color: '#FFFFFF',
+    fontSize: 23,
+    fontWeight: '700',
+    letterSpacing: 0,
   },
 });
