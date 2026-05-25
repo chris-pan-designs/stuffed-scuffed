@@ -10,6 +10,7 @@ import * as THREE from 'three';
 import type { DetectedOutline } from '@/lib/outlineDetection';
 
 type PlushMeshViewerProps = {
+  backgroundColor?: string;
   onPlushDragChange?: (isDragging: boolean) => void;
   onPlushDrop?: (plushId: string, point: { x: number; y: number }) => void;
   onPlushesPrepared?: () => void;
@@ -37,6 +38,7 @@ type PlushRuntime = {
   id: string;
   mesh: THREE.Group;
   physics: PhysicsState;
+  shadow: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   softness: PlushSoftnessState;
 };
 
@@ -165,6 +167,11 @@ const PLUSH_DEPTH_SPACING = 0.045;
 const PLUSH_MAX_DEPTH = 0.14;
 const MAX_COLLISION_SAMPLE_POINTS = 520;
 const PHYSICS_SCREEN_COLLISION_CELL_SIZE = 0.035;
+const SHADOW_BASE_OPACITY = 0.14;
+const SHADOW_MIN_OPACITY = 0.025;
+const SHADOW_MAX_LIFT = 4.2;
+const SHADOW_DEPTH_OFFSET = 0.035;
+const SHADOW_FLOOR_INSET = 0.08;
 
 const plushSoftnessTuning = {
   impactSquashAmount: 0.16,
@@ -784,6 +791,72 @@ const getProjectedHalfExtents = (mesh: THREE.Group, physics: PhysicsState) => {
 
 const getVisualDepthForIndex = (index: number, totalCount: number) =>
   THREE.MathUtils.clamp((index - (totalCount - 1) / 2) * PLUSH_DEPTH_SPACING, -PLUSH_MAX_DEPTH, PLUSH_MAX_DEPTH);
+
+let sharedShadowTexture: THREE.DataTexture | null = null;
+
+const createShadowTexture = () => {
+  if (sharedShadowTexture) {
+    return sharedShadowTexture;
+  }
+
+  const size = 96;
+  const data = new Uint8Array(size * size * 4);
+  const center = (size - 1) / 2;
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const dx = (x - center) / center;
+      const dy = (y - center) / center;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      const alpha = Math.max(0, 1 - distance);
+      const featheredAlpha = alpha * alpha * (3 - 2 * alpha);
+      const index = (y * size + x) * 4;
+
+      data[index] = 0;
+      data[index + 1] = 0;
+      data[index + 2] = 0;
+      data[index + 3] = Math.round(featheredAlpha * 255);
+    }
+  }
+
+  sharedShadowTexture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  sharedShadowTexture.needsUpdate = true;
+
+  return sharedShadowTexture;
+};
+
+const createPlushShadow = () => {
+  const geometry = new THREE.PlaneGeometry(1, 1);
+  const material = new THREE.MeshBasicMaterial({
+    color: 0x000000,
+    depthWrite: false,
+    map: createShadowTexture(),
+    opacity: SHADOW_BASE_OPACITY,
+    transparent: true,
+  });
+  const shadow = new THREE.Mesh(geometry, material);
+
+  shadow.renderOrder = -1;
+
+  return shadow;
+};
+
+const updatePlushShadow = (runtime: PlushRuntime, state: SceneState, isVisible = true) => {
+  const halfExtents = getProjectedHalfExtents(runtime.mesh, runtime.physics);
+  const floorY = -(state.viewportWorldHeight / 2 - halfExtents.y);
+  const shadowFloorY = -state.viewportWorldHeight / 2 + SHADOW_FLOOR_INSET;
+  const lift = Math.max(0, runtime.physics.position.y - floorY);
+  const normalizedLift = THREE.MathUtils.clamp(lift / SHADOW_MAX_LIFT, 0, 1);
+  const width = Math.max(runtime.physics.halfWidth * (1.12 + normalizedLift * 1.1), 0.16);
+  const height = Math.max(runtime.physics.halfHeight * (0.16 + normalizedLift * 0.12), 0.055);
+
+  runtime.shadow.visible = isVisible;
+  runtime.shadow.position.set(runtime.physics.position.x, shadowFloorY, runtime.depthZ - SHADOW_DEPTH_OFFSET);
+  runtime.shadow.rotation.set(0, 0, 0);
+  runtime.shadow.scale.set(width, height, 1);
+  runtime.shadow.material.opacity =
+    SHADOW_MIN_OPACITY + (SHADOW_BASE_OPACITY - SHADOW_MIN_OPACITY) * (1 - normalizedLift);
+};
 
 const createPhysicsState = (): PhysicsState => ({
   angularVelocity: new THREE.Vector3(),
@@ -1436,10 +1509,12 @@ const createPlushRuntime = (
   physicsEnabled: boolean
 ) => {
   const mesh = createPlushMesh(plush.imageUri);
+  const shadow = createPlushShadow();
   const physics = createPhysicsState();
   const softness = createSoftnessState();
   const depthZ = getVisualDepthForIndex(index, totalCount);
 
+  state.scene?.add(shadow);
   state.scene?.add(mesh);
 
   physics.radius = mesh.userData.physicsRadius ?? PLUSH_TARGET_SIZE / 2;
@@ -1453,8 +1528,9 @@ const createPlushRuntime = (
   physics.position.set(startX, physicsEnabled ? startY : 0, depthZ);
   physics.velocity.set(0, physicsEnabled ? -0.35 : 0, 0);
   mesh.position.copy(physics.position);
+  updatePlushShadow({ depthZ, id: plush.id, mesh, physics, shadow, softness }, state, physicsEnabled);
 
-  return { depthZ, id: plush.id, mesh, physics, softness };
+  return { depthZ, id: plush.id, mesh, physics, shadow, softness };
 };
 
 const isTouchOnPlush = (
@@ -1498,6 +1574,7 @@ const isTouchOnPlush = (
 };
 
 export function PlushMeshViewer({
+  backgroundColor = '#FFFFFF',
   onPlushDragChange,
   onPlushDrop,
   onPlushesPrepared,
@@ -1735,6 +1812,7 @@ export function PlushMeshViewer({
       runtime.depthZ = getVisualDepthForIndex(index, runtimesRef.current.length);
       runtime.physics.position.set(startX, physicsEnabled ? startY : 0, runtime.depthZ);
       runtime.mesh.position.copy(runtime.physics.position);
+      updatePlushShadow(runtime, stateRef.current, physicsEnabled);
       resetPlushSoftness(runtime.mesh, runtime.softness);
 
     if (!physicsEnabled) {
@@ -1756,6 +1834,9 @@ export function PlushMeshViewer({
 
     removedRuntimes.forEach((runtime) => {
       stateRef.current.scene?.remove(runtime.mesh);
+      stateRef.current.scene?.remove(runtime.shadow);
+      runtime.shadow.geometry.dispose();
+      runtime.shadow.material.dispose();
       if (activeRuntimeRef.current?.id === runtime.id) {
         activeRuntimeRef.current = null;
         onPlushDragChange?.(false);
@@ -1780,6 +1861,7 @@ export function PlushMeshViewer({
       runtime.depthZ = getVisualDepthForIndex(index, runtimesRef.current.length);
       runtime.physics.position.z = runtime.depthZ;
       runtime.mesh.position.z = runtime.depthZ;
+      updatePlushShadow(runtime, stateRef.current, physicsEnabledRef.current);
     });
 
     if (newPlushes.length > 0) {
@@ -1790,7 +1872,7 @@ export function PlushMeshViewer({
   const handleContextCreate = (gl: ExpoWebGLRenderingContext) => {
     const renderer = new Renderer({ gl, alpha: true, antialias: true }) as unknown as THREE.WebGLRenderer;
     renderer.setSize(gl.drawingBufferWidth, gl.drawingBufferHeight);
-    renderer.setClearColor(0xffffff, 0);
+    renderer.setClearColor(new THREE.Color(backgroundColor), 0);
 
     const scene = new THREE.Scene();
     stateRef.current.scene = scene;
@@ -1826,12 +1908,14 @@ export function PlushMeshViewer({
           );
           runtime.physics.position.z = runtime.depthZ;
           runtime.physics.velocity.z = 0;
+          updatePlushShadow(runtime, stateRef.current, true);
         });
         resolvePlushCollisions(runtimesRef.current);
         settleRestingPlushes(runtimesRef.current, stateRef.current);
         runtimesRef.current.forEach((runtime) => {
           runtime.physics.position.z = runtime.depthZ;
           runtime.mesh.position.copy(runtime.physics.position);
+          updatePlushShadow(runtime, stateRef.current, true);
         });
       }
       renderer.render(scene, camera);
