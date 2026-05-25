@@ -385,7 +385,7 @@ export default function HomeScreen() {
   useEffect(() => {
     Animated.timing(focusModeTransition, {
       toValue: focusedPlush ? 1 : 0,
-      duration: 260,
+      duration: 420,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();
@@ -596,17 +596,20 @@ export default function HomeScreen() {
   });
   const dockTones = isPartyMode ? DARK_DOCK_TONES : DOCK_TONES;
   const normalDockOpacity = focusModeTransition.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, 0],
+    inputRange: [0, 0.45, 0.55, 1],
+    outputRange: [1, 0, 0, 0],
   });
   const normalDockTranslateY = focusModeTransition.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 10],
+    inputRange: [0, 0.45, 1],
+    outputRange: [0, 8, 8],
   });
-  const focusDockOpacity = focusModeTransition;
+  const focusDockOpacity = focusModeTransition.interpolate({
+    inputRange: [0, 0.45, 0.55, 1],
+    outputRange: [0, 0, 0, 1],
+  });
   const focusDockTranslateY = focusModeTransition.interpolate({
-    inputRange: [0, 1],
-    outputRange: [10, 0],
+    inputRange: [0, 0.55, 1],
+    outputRange: [8, 8, 0],
   });
   const nameTagOpacity = focusModeTransition;
 
