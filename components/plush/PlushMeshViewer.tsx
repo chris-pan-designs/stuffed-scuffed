@@ -10,7 +10,10 @@ import * as THREE from 'three';
 import type { DetectedOutline } from '@/lib/outlineDetection';
 
 type PlushMeshViewerProps = {
+  onPlushDragChange?: (isDragging: boolean) => void;
+  onPlushDrop?: (plushId: string, point: { x: number; y: number }) => void;
   onPlushesPrepared?: () => void;
+  partyPulseKey?: number;
   plushes: {
     id: string;
     imageUri: string;
@@ -121,14 +124,16 @@ const FLAT_EDGE_BAND = 0.055;
 const SIDE_THICKNESS = 0;
 const DEFAULT_ROTATION = { x: -0.1, y: -0.25, z: 0 };
 const PHYSICS_GRAVITY = 12.5;
-const DEVICE_GRAVITY_SMOOTHING = 0.72;
-const DEVICE_GRAVITY_UPDATE_MS = 16;
-const DEVICE_GRAVITY_WAKEUP_IMPULSE = 0.42;
+const DEVICE_SHAKE_UPDATE_MS = 16;
 const DEVICE_SHAKE_THRESHOLD = 1.05;
 const DEVICE_SHAKE_IMPULSE = 2.2;
 const DEVICE_SHAKE_TUMBLE = 2.8;
 const DEVICE_SHAKE_COOLDOWN_MS = 120;
-const PHYSICS_BOUNCE = 0.18;
+const PARTY_PULSE_UPWARD_IMPULSE = 6.2;
+const PARTY_PULSE_SIDE_IMPULSE = 1.8;
+const PARTY_PULSE_TUMBLE = 5.4;
+const PARTY_PULSE_STAGGER_MS = 140;
+const PHYSICS_BOUNCE = 0.32;
 const PHYSICS_LINEAR_DAMPING = 0.992;
 const PHYSICS_ANGULAR_DAMPING = 0.999;
 const PHYSICS_FLOOR_ANGULAR_DAMPING = 0.82;
@@ -140,13 +145,15 @@ const PHYSICS_FLOOR_REST_DAMPING = 0.78;
 const PHYSICS_FLOOR_REST_ANGULAR_DAMPING = 0.68;
 const PHYSICS_DRAG_ROTATION = 0.68;
 const PHYSICS_RELEASE_TORQUE = 0.54;
+const PHYSICS_RELEASE_VELOCITY_SCALE = 0.48;
 const PHYSICS_THROW_TUMBLE = 0.95;
-const PHYSICS_MAX_ANGULAR_SPEED = 7;
+const PHYSICS_MAX_ANGULAR_SPEED = 8.5;
 const PHYSICS_HANG_TORQUE = 18;
 const PHYSICS_HANG_DAMPING = 0.975;
 const PHYSICS_FLOOR_TOPPLE_TORQUE = 4.8;
-const PHYSICS_AIR_GRAVITY_TUMBLE = 0.34;
-const PHYSICS_PLUSH_COLLISION_BOUNCE = 0.24;
+const PHYSICS_AIR_GRAVITY_TUMBLE = 0.62;
+const PHYSICS_AIR_GRAVITY_ROLL = 0.3;
+const PHYSICS_PLUSH_COLLISION_BOUNCE = 0.34;
 const PHYSICS_PLUSH_COLLISION_PUSH = 0.42;
 const PHYSICS_PLUSH_COLLISION_RADIUS_SCALE = 0.86;
 const PHYSICS_PLUSH_RESTING_CONTACT_SPEED = 0.45;
@@ -160,15 +167,15 @@ const MAX_COLLISION_SAMPLE_POINTS = 520;
 const PHYSICS_SCREEN_COLLISION_CELL_SIZE = 0.035;
 
 const plushSoftnessTuning = {
-  impactSquashAmount: 0.08,
-  squashDuration: 0.12,
+  impactSquashAmount: 0.16,
+  squashDuration: 0.16,
   returnSpringStrength: 95,
-  wobbleAmount: 0.055,
-  maxSquash: 0.12,
-  impactStretchAmount: 0.32,
-  impactThreshold: 0.12,
-  impactStrengthForMaxSquash: 3.2,
-  scaleDamping: 16,
+  wobbleAmount: 0.085,
+  maxSquash: 0.24,
+  impactStretchAmount: 0.46,
+  impactThreshold: 0.06,
+  impactStrengthForMaxSquash: 2.2,
+  scaleDamping: 13,
   wobbleSpringStrength: 58,
   wobbleDamping: 8.5,
   bodyFlexAmount: 0,
@@ -177,11 +184,11 @@ const plushSoftnessTuning = {
   bendDamping: 7.5,
   velocityBendAmount: 0.032,
   spinBendAmount: 0.018,
-  impactDentAmount: 0.08,
-  maxDent: 0.1,
-  dentRadius: 0.82,
-  dentSpringStrength: 110,
-  dentDamping: 13,
+  impactDentAmount: 0.18,
+  maxDent: 0.22,
+  dentRadius: 0.88,
+  dentSpringStrength: 92,
+  dentDamping: 10,
 };
 
 const createTexture = (imageUri: string) => {
@@ -699,16 +706,6 @@ const getWorldPoint = (
     0
   );
 
-const getAccelerometerGravity = (x: number, y: number) => {
-  const gravity = new THREE.Vector3(x, y, 0);
-
-  if (gravity.lengthSq() < 0.0001) {
-    return new THREE.Vector3(0, -PHYSICS_GRAVITY, 0);
-  }
-
-  return gravity.normalize().multiplyScalar(PHYSICS_GRAVITY);
-};
-
 const applyShakeImpulse = (runtimes: PlushRuntime[], shake: THREE.Vector3) => {
   const shakeStrength = shake.length();
 
@@ -730,6 +727,26 @@ const applyShakeImpulse = (runtimes: PlushRuntime[], shake: THREE.Vector3) => {
     runtime.physics.angularVelocity.z +=
       alternatingKick * DEVICE_SHAKE_TUMBLE * Math.min(1.6, shakeStrength);
     clampAngularVelocity(runtime.physics.angularVelocity);
+  });
+};
+
+const applyPartyPulse = (runtimes: PlushRuntime[], pulseKey: number) => {
+  runtimes.forEach((runtime, index) => {
+    setTimeout(() => {
+      if (runtime.physics.dragging || !runtimes.includes(runtime)) {
+        return;
+      }
+
+      const direction = (pulseKey + index) % 2 === 0 ? 1 : -1;
+      const wobble = Math.sin((pulseKey + 1) * (index + 1) * 1.73);
+
+      runtime.physics.velocity.x += direction * (PARTY_PULSE_SIDE_IMPULSE + Math.abs(wobble) * 0.7);
+      runtime.physics.velocity.y += PARTY_PULSE_UPWARD_IMPULSE + Math.abs(wobble) * 1.1;
+      runtime.physics.angularVelocity.x += direction * PARTY_PULSE_TUMBLE * 0.35;
+      runtime.physics.angularVelocity.y -= wobble * PARTY_PULSE_TUMBLE * 0.3;
+      runtime.physics.angularVelocity.z += direction * PARTY_PULSE_TUMBLE;
+      clampAngularVelocity(runtime.physics.angularVelocity);
+    }, (index % 5) * PARTY_PULSE_STAGGER_MS);
   });
 };
 
@@ -1103,7 +1120,10 @@ const applyPhysicsFrame = (
     physics.velocity.z = 0;
   } else {
     physics.velocity.addScaledVector(gravity, deltaSeconds);
+    const fallSpeed = Math.min(1.8, physics.velocity.length() / PHYSICS_GRAVITY);
     const gravityTumbleZ = physics.velocity.x * gravity.y - physics.velocity.y * gravity.x;
+    physics.angularVelocity.x += gravity.y * PHYSICS_AIR_GRAVITY_ROLL * fallSpeed * deltaSeconds;
+    physics.angularVelocity.y -= gravity.x * PHYSICS_AIR_GRAVITY_ROLL * fallSpeed * deltaSeconds;
     physics.angularVelocity.z += gravityTumbleZ * PHYSICS_AIR_GRAVITY_TUMBLE * deltaSeconds;
     clampAngularVelocity(physics.angularVelocity);
 
@@ -1477,7 +1497,14 @@ const isTouchOnPlush = (
   return null;
 };
 
-export function PlushMeshViewer({ onPlushesPrepared, plushes, physicsEnabled = false }: PlushMeshViewerProps) {
+export function PlushMeshViewer({
+  onPlushDragChange,
+  onPlushDrop,
+  onPlushesPrepared,
+  partyPulseKey = 0,
+  plushes,
+  physicsEnabled = false,
+}: PlushMeshViewerProps) {
   const stateRef = useRef<SceneState>({
     animationFrame: null,
     camera: null,
@@ -1491,12 +1518,19 @@ export function PlushMeshViewer({ onPlushesPrepared, plushes, physicsEnabled = f
   const runtimesRef = useRef<PlushRuntime[]>([]);
   const activeRuntimeRef = useRef<PlushRuntime | null>(null);
   const gravityRef = useRef(new THREE.Vector3(0, -PHYSICS_GRAVITY, 0));
-  const previousGravityRef = useRef(new THREE.Vector3(0, -PHYSICS_GRAVITY, 0));
   const previousAccelerationRef = useRef(new THREE.Vector3());
   const lastShakeTimeRef = useRef(0);
   const physicsEnabledRef = useRef(physicsEnabled);
   const rotationRef = useRef(DEFAULT_ROTATION);
   const gestureStartRotationRef = useRef(DEFAULT_ROTATION);
+
+  useEffect(() => {
+    if (!physicsEnabledRef.current || partyPulseKey <= 0) {
+      return;
+    }
+
+    applyPartyPulse(runtimesRef.current, partyPulseKey);
+  }, [partyPulseKey]);
 
   useEffect(() => {
     physicsEnabledRef.current = physicsEnabled;
@@ -1506,14 +1540,14 @@ export function PlushMeshViewer({ onPlushesPrepared, plushes, physicsEnabled = f
     let isMounted = true;
     let subscription: { remove: () => void } | null = null;
 
-    const subscribeToGravity = async () => {
+    const subscribeToShake = async () => {
       const isAvailable = await Accelerometer.isAvailableAsync();
 
       if (!isMounted || !isAvailable) {
         return;
       }
 
-      Accelerometer.setUpdateInterval(DEVICE_GRAVITY_UPDATE_MS);
+      Accelerometer.setUpdateInterval(DEVICE_SHAKE_UPDATE_MS);
       subscription = Accelerometer.addListener(({ x, y, z }) => {
         const acceleration = new THREE.Vector3(x, y, z);
         const shake = acceleration.clone().sub(previousAccelerationRef.current);
@@ -1525,26 +1559,10 @@ export function PlushMeshViewer({ onPlushesPrepared, plushes, physicsEnabled = f
         }
 
         previousAccelerationRef.current.copy(acceleration);
-
-        const targetGravity = getAccelerometerGravity(x, y);
-        const previousDirection = previousGravityRef.current.clone().normalize();
-        const nextDirection = targetGravity.clone().normalize();
-        const directionChange = previousDirection.distanceTo(nextDirection);
-
-        gravityRef.current.lerp(targetGravity, DEVICE_GRAVITY_SMOOTHING);
-        previousGravityRef.current.copy(gravityRef.current);
-
-        if (directionChange > 0.28) {
-          runtimesRef.current.forEach((runtime) => {
-            if (!runtime.physics.dragging && runtime.physics.velocity.length() < PHYSICS_PLUSH_RESTING_CONTACT_SPEED) {
-              runtime.physics.velocity.addScaledVector(nextDirection, DEVICE_GRAVITY_WAKEUP_IMPULSE * directionChange);
-            }
-          });
-        }
       });
     };
 
-    subscribeToGravity();
+    subscribeToShake();
 
     return () => {
       isMounted = false;
@@ -1588,6 +1606,7 @@ export function PlushMeshViewer({ onPlushesPrepared, plushes, physicsEnabled = f
             physics.velocity.set(0, 0, 0);
             physics.angularVelocity.x = 0;
             physics.angularVelocity.y = 0;
+            onPlushDragChange?.(true);
             return;
           }
 
@@ -1645,16 +1664,22 @@ export function PlushMeshViewer({ onPlushesPrepared, plushes, physicsEnabled = f
 
           if (!physicsEnabled || !activeRuntime) {
             activeRuntimeRef.current = null;
+            onPlushDragChange?.(false);
             return;
           }
 
           const physics = activeRuntime.physics;
           const state = stateRef.current;
-          const releaseVelocity = new THREE.Vector3(
-            gesture.vx * state.viewportWorldWidth * 0.34,
-            -gesture.vy * state.viewportWorldHeight * 0.34,
+          const gestureReleaseVelocity = new THREE.Vector3(
+            gesture.vx * state.viewportWorldWidth * PHYSICS_RELEASE_VELOCITY_SCALE,
+            -gesture.vy * state.viewportWorldHeight * PHYSICS_RELEASE_VELOCITY_SCALE,
             0
           );
+          const trackedReleaseVelocity = physics.velocity.clone().multiplyScalar(0.92);
+          const releaseVelocity =
+            gestureReleaseVelocity.lengthSq() >= trackedReleaseVelocity.lengthSq()
+              ? gestureReleaseVelocity
+              : trackedReleaseVelocity;
           const grabWorldOffset = physics.grabLocalOffset
             .clone()
             .applyQuaternion(activeRuntime.mesh.quaternion);
@@ -1666,21 +1691,24 @@ export function PlushMeshViewer({ onPlushesPrepared, plushes, physicsEnabled = f
           );
 
           physics.dragging = false;
-          physics.velocity.lerp(releaseVelocity, 0.6);
+          physics.velocity.copy(releaseVelocity);
           physics.angularVelocity.multiplyScalar(0.9);
           physics.angularVelocity.addScaledVector(torque, PHYSICS_RELEASE_TORQUE);
           physics.angularVelocity.addScaledVector(tumble, PHYSICS_THROW_TUMBLE);
           clampAngularVelocity(physics.angularVelocity);
+          onPlushDrop?.(activeRuntime.id, { x: gesture.moveX, y: gesture.moveY });
           activeRuntimeRef.current = null;
+          onPlushDragChange?.(false);
         },
         onPanResponderTerminate: () => {
           if (activeRuntimeRef.current) {
             activeRuntimeRef.current.physics.dragging = false;
             activeRuntimeRef.current = null;
+            onPlushDragChange?.(false);
           }
         },
       }),
-    [physicsEnabled]
+    [onPlushDragChange, onPlushDrop, physicsEnabled]
   );
 
   useEffect(() => {
@@ -1722,7 +1750,18 @@ export function PlushMeshViewer({ onPlushesPrepared, plushes, physicsEnabled = f
     }
 
     const existingIds = new Set(runtimesRef.current.map((runtime) => runtime.id));
+    const nextIds = new Set(plushes.map((plush) => plush.id));
+    const removedRuntimes = runtimesRef.current.filter((runtime) => !nextIds.has(runtime.id));
     const newPlushes = plushes.filter((plush) => !existingIds.has(plush.id));
+
+    removedRuntimes.forEach((runtime) => {
+      stateRef.current.scene?.remove(runtime.mesh);
+      if (activeRuntimeRef.current?.id === runtime.id) {
+        activeRuntimeRef.current = null;
+        onPlushDragChange?.(false);
+      }
+    });
+    runtimesRef.current = runtimesRef.current.filter((runtime) => nextIds.has(runtime.id));
     const baseRuntimeCount = runtimesRef.current.length;
 
     newPlushes.forEach((plush, index) => {
@@ -1746,7 +1785,7 @@ export function PlushMeshViewer({ onPlushesPrepared, plushes, physicsEnabled = f
     if (newPlushes.length > 0) {
       onPlushesPrepared?.();
     }
-  }, [onPlushesPrepared, plushes]);
+  }, [onPlushDragChange, onPlushesPrepared, plushes]);
 
   const handleContextCreate = (gl: ExpoWebGLRenderingContext) => {
     const renderer = new Renderer({ gl, alpha: true, antialias: true }) as unknown as THREE.WebGLRenderer;
