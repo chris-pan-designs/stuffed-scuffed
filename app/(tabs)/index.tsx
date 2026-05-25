@@ -293,10 +293,13 @@ export default function HomeScreen() {
   const [isPreparingPlush, setIsPreparingPlush] = useState(false);
   const [isRemovingBackground, setIsRemovingBackground] = useState(false);
   const [playAreaSize, setPlayAreaSize] = useState({ width: 0, height: 0 });
+  const [nameTagSize, setNameTagSize] = useState({ width: 0, height: 0 });
   const [focusedPlushId, setFocusedPlushId] = useState<string | null>(null);
   const partyTransition = useRef(new Animated.Value(0)).current;
   const partyChromeTransition = useRef(new Animated.Value(0)).current;
   const partyGradientMotion = useRef(new Animated.Value(0)).current;
+  const focusModeTransition = useRef(new Animated.Value(0)).current;
+  const nameTagPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
   const isWorking = isPreparingPlush || isRemovingBackground;
   const focusedPlush = plushes.find((plush) => plush.id === focusedPlushId);
 
@@ -378,6 +381,15 @@ export default function HomeScreen() {
       setFocusedPlushId(null);
     }
   }, [focusedPlushId, plushes]);
+
+  useEffect(() => {
+    Animated.timing(focusModeTransition, {
+      toValue: focusedPlush ? 1 : 0,
+      duration: 260,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [focusedPlush, focusModeTransition]);
 
   const addPlush = (imageUri: string) => {
     setIsPreparingPlush(true);
@@ -583,6 +595,20 @@ export default function HomeScreen() {
     outputRange: ['#FCF1E9', '#000000'],
   });
   const dockTones = isPartyMode ? DARK_DOCK_TONES : DOCK_TONES;
+  const normalDockOpacity = focusModeTransition.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 0],
+  });
+  const normalDockTranslateY = focusModeTransition.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 10],
+  });
+  const focusDockOpacity = focusModeTransition;
+  const focusDockTranslateY = focusModeTransition.interpolate({
+    inputRange: [0, 1],
+    outputRange: [10, 0],
+  });
+  const nameTagOpacity = focusModeTransition;
 
   return (
     <Animated.View style={[styles.screen, { backgroundColor: screenBackgroundColor, paddingTop: insets.top + 16 }]}>
@@ -622,6 +648,12 @@ export default function HomeScreen() {
             <PlushMeshViewer
               backgroundColor="#FCF1E9"
               focusedPlushId={focusedPlushId}
+              onFocusedPlushLayout={(layout) => {
+                nameTagPosition.setValue({
+                  x: layout.x - playAreaSize.width / 2,
+                  y: layout.y - nameTagSize.height - 40,
+                });
+              }}
               onEmptyPress={() => setFocusedPlushId(null)}
               onPlushDragChange={setIsHoldingPlush}
               onPlushDrop={handlePlushDrop}
@@ -635,9 +667,31 @@ export default function HomeScreen() {
         ) : null}
 
         {focusedPlush ? (
-          <View pointerEvents="none" style={styles.nameTag}>
+          <Animated.View
+            pointerEvents="none"
+            onLayout={(event) => {
+              const { width, height } = event.nativeEvent.layout;
+
+              setNameTagSize((currentSize) => {
+                if (currentSize.width === width && currentSize.height === height) {
+                  return currentSize;
+                }
+
+                return { width, height };
+              });
+            }}
+            style={[
+              styles.nameTag,
+              {
+                opacity: nameTagOpacity,
+                transform: [
+                  { translateX: nameTagPosition.x },
+                  { translateY: nameTagPosition.y },
+                ],
+              },
+            ]}>
             <Text style={[styles.nameTagText, { fontFamily: dockLabelFontFamily }]}>{focusedPlush.name}</Text>
-          </View>
+          </Animated.View>
         ) : null}
 
         {isPartyVisualVisible ? (
@@ -692,9 +746,62 @@ export default function HomeScreen() {
       </View>
 
       <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 32) }]}>
-        <View style={styles.bottomButtonRow}>
-          {focusedPlush ? (
-            <>
+        <View style={styles.bottomButtonStage}>
+          <Animated.View
+            pointerEvents={focusedPlush ? 'none' : 'auto'}
+            style={[
+              styles.bottomButtonRow,
+              styles.bottomButtonLayer,
+              { opacity: normalDockOpacity, transform: [{ translateY: normalDockTranslateY }] },
+            ]}>
+            <ActionButton
+              accessibilityLabel="Choose photo"
+              disabled={isWorking}
+              fontFamily={dockLabelFontFamily}
+              icon={(color) => <PhotoLibraryIcon color={color} />}
+              label="Library"
+              onPress={pickImage}
+              tone={dockTones.library}
+            />
+
+            <ActionButton
+              accessibilityLabel="Take photo"
+              disabled={isWorking}
+              fontFamily={dockLabelFontFamily}
+              icon={(color) => <CameraIcon color={color} />}
+              label="Camera"
+              onPress={takePhoto}
+              tone={dockTones.camera}
+            />
+
+            <ActionButton
+              accessibilityLabel={isPartyMode ? 'Stop party' : 'Start party'}
+              disabled={isWorking || plushes.length === 0}
+              fontFamily={dockLabelFontFamily}
+              icon={(color) => <PartyIcon color={color} />}
+              label="Party"
+              onPress={() => setIsPartyMode((currentValue) => !currentValue)}
+              tone={dockTones.party}
+            />
+
+            <ActionButton
+              accessibilityLabel="Reset plushies"
+              disabled={isWorking || plushes.length === 0}
+              fontFamily={dockLabelFontFamily}
+              icon={(color) => <ResetIcon color={color} />}
+              label="Reset"
+              onPress={resetPlushes}
+              tone={dockTones.reset}
+            />
+          </Animated.View>
+
+          <Animated.View
+            pointerEvents={focusedPlush ? 'auto' : 'none'}
+            style={[
+              styles.bottomButtonRow,
+              styles.bottomButtonLayer,
+              { opacity: focusDockOpacity, transform: [{ translateY: focusDockTranslateY }] },
+            ]}>
               <View style={styles.focusSingleActionFrame}>
                 <ActionButton
                   accessibilityLabel="Back to all plushies"
@@ -725,50 +832,7 @@ export default function HomeScreen() {
                   tone={FOCUS_DOCK_TONES.delete}
                 />
               </View>
-            </>
-          ) : (
-            <>
-              <ActionButton
-                accessibilityLabel="Choose photo"
-                disabled={isWorking}
-                fontFamily={dockLabelFontFamily}
-                icon={(color) => <PhotoLibraryIcon color={color} />}
-                label="Library"
-                onPress={pickImage}
-                tone={dockTones.library}
-              />
-
-              <ActionButton
-                accessibilityLabel="Take photo"
-                disabled={isWorking}
-                fontFamily={dockLabelFontFamily}
-                icon={(color) => <CameraIcon color={color} />}
-                label="Camera"
-                onPress={takePhoto}
-                tone={dockTones.camera}
-              />
-
-              <ActionButton
-                accessibilityLabel={isPartyMode ? 'Stop party' : 'Start party'}
-                disabled={isWorking || plushes.length === 0}
-                fontFamily={dockLabelFontFamily}
-                icon={(color) => <PartyIcon color={color} />}
-                label="Party"
-                onPress={() => setIsPartyMode((currentValue) => !currentValue)}
-                tone={dockTones.party}
-              />
-
-              <ActionButton
-                accessibilityLabel="Reset plushies"
-                disabled={isWorking || plushes.length === 0}
-                fontFamily={dockLabelFontFamily}
-                icon={(color) => <ResetIcon color={color} />}
-                label="Reset"
-                onPress={resetPlushes}
-                tone={dockTones.reset}
-              />
-            </>
-          )}
+          </Animated.View>
         </View>
       </View>
     </Animated.View>
@@ -853,20 +917,25 @@ const styles = StyleSheet.create({
   },
   nameTag: {
     position: 'absolute',
-    top: '30%',
+    top: 0,
     zIndex: 6,
     alignSelf: 'center',
-    borderRadius: 10,
-    backgroundColor: 'rgba(52, 48, 48, 0.88)',
-    paddingHorizontal: 14,
-    paddingVertical: 7,
+    borderRadius: 14,
+    backgroundColor: '#FBF5EF',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.16,
+    shadowRadius: 16,
+    elevation: 7,
   },
   nameTagText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '700',
+    color: '#C8741D',
+    fontSize: 14,
+    fontWeight: '600',
     letterSpacing: 0,
-    lineHeight: 18,
+    lineHeight: 17,
   },
   trashButton: {
     position: 'absolute',
@@ -900,10 +969,16 @@ const styles = StyleSheet.create({
     paddingRight: 20,
     paddingTop: 16,
   },
+  bottomButtonStage: {
+    height: 69,
+  },
   bottomButtonRow: {
     flexDirection: 'row',
     gap: 8,
     justifyContent: 'space-between',
+  },
+  bottomButtonLayer: {
+    ...StyleSheet.absoluteFillObject,
   },
   focusSingleActionFrame: {
     width: 82,

@@ -12,6 +12,7 @@ import type { DetectedOutline } from '@/lib/outlineDetection';
 type PlushMeshViewerProps = {
   backgroundColor?: string;
   focusedPlushId?: string | null;
+  onFocusedPlushLayout?: (layout: { x: number; y: number }) => void;
   onEmptyPress?: () => void;
   onPlushDragChange?: (isDragging: boolean) => void;
   onPlushDrop?: (plushId: string, point: { x: number; y: number }) => void;
@@ -171,8 +172,10 @@ const PLUSH_MAX_DEPTH = 0.14;
 const MAX_COLLISION_SAMPLE_POINTS = 520;
 const PHYSICS_SCREEN_COLLISION_CELL_SIZE = 0.035;
 const FOCUS_FLOAT_AMPLITUDE = 0.08;
-const FOCUS_FLOAT_SPEED = 0.0018;
+const FOCUS_FLOAT_PERIOD_MS = 2800;
 const FOCUS_LERP = 0.09;
+const FOCUS_FRONT_FACE_DURATION_MS = 520;
+const FOCUS_ROTATION_LERP = 0.06;
 const FOCUS_OTHER_OPACITY = 0;
 const TAP_MOVE_THRESHOLD = 10;
 const SHADOW_BASE_OPACITY = 0.14;
@@ -887,7 +890,15 @@ const updatePlushShadow = (runtime: PlushRuntime, state: SceneState, isVisible =
     SHADOW_MIN_OPACITY + (SHADOW_BASE_OPACITY - SHADOW_MIN_OPACITY) * (1 - normalizedLift);
 };
 
-const applyFocusFrame = (runtimes: PlushRuntime[], focusedPlushId: string, state: SceneState, frameTime: number) => {
+const applyFocusFrame = (
+  runtimes: PlushRuntime[],
+  focusedPlushId: string,
+  state: SceneState,
+  frameTime: number,
+  focusStartedAt: number,
+  layout: { width: number; height: number },
+  onFocusedPlushLayout?: (layout: { x: number; y: number }) => void
+) => {
   const focusedRuntime = runtimes.find((runtime) => runtime.id === focusedPlushId);
 
   runtimes.forEach((runtime) => {
@@ -897,22 +908,42 @@ const applyFocusFrame = (runtimes: PlushRuntime[], focusedPlushId: string, state
     runtime.shadow.visible = false;
 
     if (!isFocused) {
+      runtime.physics.dragging = false;
+      runtime.physics.lastFrameTime = null;
+      runtime.physics.velocity.set(0, 0, 0);
+      runtime.physics.angularVelocity.set(0, 0, 0);
       return;
     }
 
-    const floatY = Math.sin(frameTime * FOCUS_FLOAT_SPEED) * FOCUS_FLOAT_AMPLITUDE;
+    const elapsedFocusTime = Math.max(0, frameTime - focusStartedAt);
+    const floatY = -Math.sin((elapsedFocusTime / FOCUS_FLOAT_PERIOD_MS) * Math.PI) * FOCUS_FLOAT_AMPLITUDE;
     const targetPosition = new THREE.Vector3(0, -state.viewportWorldHeight * 0.04 + floatY, runtime.depthZ);
 
     runtime.physics.dragging = false;
     runtime.physics.velocity.set(0, 0, 0);
     runtime.physics.angularVelocity.multiplyScalar(0.86);
     runtime.physics.position.lerp(targetPosition, FOCUS_LERP);
+    if (elapsedFocusTime < FOCUS_FRONT_FACE_DURATION_MS) {
+      runtime.mesh.rotation.x += (DEFAULT_ROTATION.x - runtime.mesh.rotation.x) * FOCUS_ROTATION_LERP;
+      runtime.mesh.rotation.y += (DEFAULT_ROTATION.y - runtime.mesh.rotation.y) * FOCUS_ROTATION_LERP;
+      runtime.mesh.rotation.z += (DEFAULT_ROTATION.z - runtime.mesh.rotation.z) * FOCUS_ROTATION_LERP;
+    }
     runtime.mesh.position.copy(runtime.physics.position);
     resetPlushSoftness(runtime.mesh, runtime.softness);
   });
 
   if (focusedRuntime) {
     focusedRuntime.mesh.position.z = focusedRuntime.depthZ;
+
+    if (onFocusedPlushLayout && state.viewportWorldWidth > 0 && state.viewportWorldHeight > 0) {
+      const tagAnchorWorldY =
+        focusedRuntime.physics.position.y + focusedRuntime.physics.halfHeight * 0.84;
+
+      onFocusedPlushLayout({
+        x: (focusedRuntime.physics.position.x / state.viewportWorldWidth + 0.5) * layout.width,
+        y: (0.5 - tagAnchorWorldY / state.viewportWorldHeight) * layout.height,
+      });
+    }
   }
 };
 
@@ -1634,6 +1665,7 @@ const isTouchOnPlush = (
 export function PlushMeshViewer({
   backgroundColor = '#FFFFFF',
   focusedPlushId = null,
+  onFocusedPlushLayout,
   onEmptyPress,
   onPlushDragChange,
   onPlushDrop,
@@ -1660,6 +1692,9 @@ export function PlushMeshViewer({
   const lastShakeTimeRef = useRef(0);
   const physicsEnabledRef = useRef(physicsEnabled);
   const focusedPlushIdRef = useRef<string | null>(focusedPlushId);
+  const onFocusedPlushLayoutRef = useRef(onFocusedPlushLayout);
+  const focusStartedAtRef = useRef<number | null>(null);
+  const isExitingFocusRef = useRef(false);
   const rotationRef = useRef(DEFAULT_ROTATION);
   const gestureStartRotationRef = useRef(DEFAULT_ROTATION);
   const gestureStartedOnEmptyRef = useRef(false);
@@ -1677,7 +1712,16 @@ export function PlushMeshViewer({
   }, [physicsEnabled]);
 
   useEffect(() => {
+    onFocusedPlushLayoutRef.current = onFocusedPlushLayout;
+  }, [onFocusedPlushLayout]);
+
+  useEffect(() => {
+    if (focusedPlushIdRef.current && !focusedPlushId) {
+      isExitingFocusRef.current = true;
+    }
+
     focusedPlushIdRef.current = focusedPlushId;
+    focusStartedAtRef.current = null;
     activeRuntimeRef.current = null;
     onPlushDragChange?.(false);
   }, [focusedPlushId, onPlushDragChange]);
@@ -1919,7 +1963,28 @@ export function PlushMeshViewer({
   }, []);
 
   useEffect(() => {
+    if (isExitingFocusRef.current && physicsEnabled) {
+      runtimesRef.current.forEach((runtime) => {
+        runtime.physics.dragging = false;
+        runtime.physics.lastFrameTime = null;
+        runtime.physics.velocity.set(0, 0, 0);
+        runtime.physics.angularVelocity.set(0, 0, 0);
+        runtime.mesh.position.copy(runtime.physics.position);
+        resetPlushSoftness(runtime.mesh, runtime.softness);
+      });
+      isExitingFocusRef.current = false;
+      return;
+    }
+
     runtimesRef.current.forEach((runtime, index) => {
+      if (focusedPlushIdRef.current) {
+        runtime.physics.dragging = false;
+        runtime.physics.lastFrameTime = null;
+        runtime.physics.velocity.set(0, 0, 0);
+        runtime.physics.angularVelocity.set(0, 0, 0);
+        return;
+      }
+
       const startHalfExtents = getProjectedHalfExtents(runtime.mesh, runtime.physics);
       const startX = (index - (runtimesRef.current.length - 1) / 2) * PLUSH_TARGET_SIZE * 0.74;
       const startY = Math.max(0, stateRef.current.viewportWorldHeight / 2 - startHalfExtents.y);
@@ -1933,10 +1998,10 @@ export function PlushMeshViewer({
       updatePlushShadow(runtime, stateRef.current, physicsEnabled);
       resetPlushSoftness(runtime.mesh, runtime.softness);
 
-    if (!physicsEnabled) {
+      if (!physicsEnabled) {
         runtime.mesh.rotation.set(DEFAULT_ROTATION.x, DEFAULT_ROTATION.y, DEFAULT_ROTATION.z);
-      rotationRef.current = DEFAULT_ROTATION;
-    }
+        rotationRef.current = DEFAULT_ROTATION;
+      }
     });
   }, [physicsEnabled]);
 
@@ -2017,7 +2082,19 @@ export function PlushMeshViewer({
       const focusedPlushId = focusedPlushIdRef.current;
 
       if (focusedPlushId) {
-        applyFocusFrame(runtimesRef.current, focusedPlushId, stateRef.current, frameTime);
+        if (focusStartedAtRef.current === null) {
+          focusStartedAtRef.current = frameTime;
+        }
+
+        applyFocusFrame(
+          runtimesRef.current,
+          focusedPlushId,
+          stateRef.current,
+          frameTime,
+          focusStartedAtRef.current,
+          layoutRef.current,
+          onFocusedPlushLayoutRef.current
+        );
       } else if (physicsEnabledRef.current) {
         runtimesRef.current.forEach((runtime) => {
           setRuntimeOpacity(runtime, 1);
