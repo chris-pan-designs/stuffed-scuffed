@@ -27,35 +27,89 @@ import { detectOutlineFromPngDataUri, type DetectedOutline } from '@/lib/outline
 type PlushItem = {
   id: string;
   imageUri: string;
+  name: string;
   outline: DetectedOutline;
 };
 
 type DockButtonTone = {
   background: string;
   border: string;
+  outerBackground: string;
   primary: string;
 };
 
 const DOCK_TONES = {
   library: {
-    background: '#FBE1DE',
-    border: '#E9AEB3',
-    primary: '#A7234A',
+    background: '#F9DDF1',
+    border: '#E8A1DD',
+    outerBackground: '#FBF5EF',
+    primary: '#B22683',
   },
   camera: {
     background: '#E3F0F8',
     border: '#7CBCEB',
+    outerBackground: '#FBF5EF',
     primary: '#2865B8',
   },
   party: {
     background: '#E8DDFC',
     border: '#B89CF0',
+    outerBackground: '#FBF5EF',
     primary: '#5D35A7',
   },
   reset: {
     background: '#E8F2EC',
     border: '#9ACBC2',
+    outerBackground: '#FBF5EF',
     primary: '#1F6762',
+  },
+} satisfies Record<string, DockButtonTone>;
+
+const DARK_DOCK_TONES = {
+  library: {
+    background: '#3A2028',
+    border: '#8E3E55',
+    outerBackground: '#1F1F1F',
+    primary: '#FFB3C8',
+  },
+  camera: {
+    background: '#1C2A38',
+    border: '#416D95',
+    outerBackground: '#1F1F1F',
+    primary: '#A9D8FF',
+  },
+  party: {
+    background: '#2B2240',
+    border: '#7256A8',
+    outerBackground: '#1F1F1F',
+    primary: '#D8C4FF',
+  },
+  reset: {
+    background: '#1D312E',
+    border: '#4A7E77',
+    outerBackground: '#1F1F1F',
+    primary: '#A9DED5',
+  },
+} satisfies Record<string, DockButtonTone>;
+
+const FOCUS_DOCK_TONES = {
+  back: {
+    background: '#F9DDF1',
+    border: '#E8A1DD',
+    outerBackground: '#FBF5EF',
+    primary: '#B22683',
+  },
+  edit: {
+    background: '#FFF4E8',
+    border: '#F0B46B',
+    outerBackground: '#FBF5EF',
+    primary: '#C8741D',
+  },
+  delete: {
+    background: '#FFE6EA',
+    border: '#F3A5AD',
+    outerBackground: '#FBF5EF',
+    primary: '#BF2C4D',
   },
 } satisfies Record<string, DockButtonTone>;
 
@@ -132,6 +186,52 @@ const ResetIcon = ({ color }: { color: string }) => (
   </Svg>
 );
 
+const BackIcon = ({ color }: { color: string }) => (
+  <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
+    <Path
+      d="M8.03089 3.91602C6.57669 4.97466 5.2706 6.21138 4.14485 7.59488C4.04828 7.71356 4 7.85646 4 7.99935M8.03089 12.0827C6.57669 11.024 5.2706 9.78732 4.14485 8.40382C4.04828 8.28513 4 8.14224 4 7.99935M4 7.99935H15C17.7614 7.99935 20 10.2379 20 12.9993C20 15.7608 17.7614 17.9993 15 17.9993H12"
+      stroke={color}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={2}
+    />
+  </Svg>
+);
+
+const EditIcon = ({ color }: { color: string }) => (
+  <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
+    <Path
+      opacity={0.28}
+      d="M13 21H21"
+      stroke={color}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={2}
+    />
+    <Path
+      d="M19.3694 2.41141C18.3496 1.7525 17.0102 1.89744 16.154 2.75744L3.05189 15.917C2.83564 16.1336 2.62424 16.3454 2.46567 16.601C2.32684 16.8248 2.22287 17.0684 2.15724 17.3234C2.08231 17.6145 2.07531 17.9137 2.06813 18.2205L2.0003 20.9709C1.99366 21.24 2.09582 21.5004 2.28367 21.6933C2.47151 21.8861 2.72919 21.9951 2.9984 21.9955L5.79769 22.0001C6.11408 22.001 6.42451 22.0019 6.72739 21.9292C6.99253 21.8656 7.24588 21.7604 7.47811 21.6176C7.74324 21.4546 7.96201 21.2343 8.18547 21.0093L21.2101 7.92735C22.0392 7.09458 22.2777 5.76573 21.609 4.68846C21.042 3.77496 20.2689 2.99261 19.3694 2.41141Z"
+      fill={color}
+    />
+  </Svg>
+);
+
+const DeleteIcon = ({ color }: { color: string }) => (
+  <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
+    <Path
+      opacity={0.28}
+      d="M6 5C5.44772 5 5 5.44772 5 6V15.0355C4.99999 15.9373 4.99999 16.6647 5.04038 17.2567C5.08191 17.8654 5.16948 18.4037 5.3806 18.9134C5.88807 20.1386 6.86144 21.1119 8.08658 21.6194C8.59628 21.8305 9.13456 21.9181 9.74331 21.9596C10.3353 22 11.0627 22 11.9645 22H12.0355C12.9373 22 13.6647 22 14.2567 21.9596C14.8654 21.9181 15.4037 21.8305 15.9134 21.6194C17.1386 21.1119 18.1119 20.1386 18.6194 18.9134C18.8305 18.4037 18.9181 17.8654 18.9596 17.2567C19 16.6647 19 15.9373 19 15.0355V6C19 5.44772 18.5523 5 18 5H6Z"
+      fill={color}
+    />
+    <Path
+      d="M16 6L14.8944 3.78885C14.3463 2.69253 13.2257 2 12 2C10.7743 2 9.65374 2.69253 9.10557 3.78885L8 6M16 6H4M16 6H20"
+      stroke={color}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={2}
+    />
+  </Svg>
+);
+
 const discoGif = require('@/assets/party mode assets/disco.gif');
 const sparklesGif = require('@/assets/party mode assets/sparkles.gif');
 
@@ -153,6 +253,7 @@ const ActionButton = ({ accessibilityLabel, disabled, fontFamily, icon, label, o
     onPress={onPress}
     style={({ pressed }) => [
       styles.actionButtonOuter,
+      { backgroundColor: tone.outerBackground },
       pressed && !disabled && styles.actionButtonPressed,
       disabled && styles.actionButtonDisabled,
     ]}>
@@ -192,9 +293,12 @@ export default function HomeScreen() {
   const [isPreparingPlush, setIsPreparingPlush] = useState(false);
   const [isRemovingBackground, setIsRemovingBackground] = useState(false);
   const [playAreaSize, setPlayAreaSize] = useState({ width: 0, height: 0 });
+  const [focusedPlushId, setFocusedPlushId] = useState<string | null>(null);
   const partyTransition = useRef(new Animated.Value(0)).current;
+  const partyChromeTransition = useRef(new Animated.Value(0)).current;
   const partyGradientMotion = useRef(new Animated.Value(0)).current;
   const isWorking = isPreparingPlush || isRemovingBackground;
+  const focusedPlush = plushes.find((plush) => plush.id === focusedPlushId);
 
   useEffect(() => {
     if (isPartyMode) {
@@ -219,6 +323,15 @@ export default function HomeScreen() {
       }
     });
   }, [isPartyMode, partyTransition]);
+
+  useEffect(() => {
+    Animated.timing(partyChromeTransition, {
+      toValue: isPartyMode ? 1 : 0,
+      duration: isPartyMode ? 1100 : 320,
+      easing: isPartyMode ? Easing.out(Easing.cubic) : Easing.in(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [isPartyMode, partyChromeTransition]);
 
   useEffect(() => {
     if (!isPartyVisualVisible) {
@@ -260,6 +373,12 @@ export default function HomeScreen() {
     return () => clearInterval(partyInterval);
   }, [isPartyMode]);
 
+  useEffect(() => {
+    if (focusedPlushId && !plushes.some((plush) => plush.id === focusedPlushId)) {
+      setFocusedPlushId(null);
+    }
+  }, [focusedPlushId, plushes]);
+
   const addPlush = (imageUri: string) => {
     setIsPreparingPlush(true);
 
@@ -269,6 +388,7 @@ export default function HomeScreen() {
         {
           id: `${Date.now()}-${currentPlushes.length}`,
           imageUri,
+          name: `plush ${currentPlushes.length + 1}`,
           outline: detectOutlineFromPngDataUri(imageUri),
         },
       ]);
@@ -387,9 +507,51 @@ export default function HomeScreen() {
 
   const resetPlushes = () => {
     setPlushes([]);
+    setFocusedPlushId(null);
     setIsHoldingPlush(false);
     setIsPreparingPlush(false);
     setIsPartyMode(false);
+  };
+
+  const focusPlush = (plushId: string) => {
+    setIsPartyMode(false);
+    setIsHoldingPlush(false);
+    setFocusedPlushId(plushId);
+  };
+
+  const editFocusedPlushName = () => {
+    if (!focusedPlush) {
+      return;
+    }
+
+    Alert.prompt(
+      'Edit plush name',
+      undefined,
+      (nextName) => {
+        const trimmedName = nextName.trim();
+
+        if (!trimmedName) {
+          return;
+        }
+
+        setPlushes((currentPlushes) =>
+          currentPlushes.map((plush) =>
+            plush.id === focusedPlush.id ? { ...plush, name: trimmedName } : plush
+          )
+        );
+      },
+      'plain-text',
+      focusedPlush.name
+    );
+  };
+
+  const deleteFocusedPlush = () => {
+    if (!focusedPlush) {
+      return;
+    }
+
+    setPlushes((currentPlushes) => currentPlushes.filter((plush) => plush.id !== focusedPlush.id));
+    setFocusedPlushId(null);
   };
 
   const handlePlayAreaLayout = (event: LayoutChangeEvent) => {
@@ -416,10 +578,16 @@ export default function HomeScreen() {
     inputRange: [0, 1],
     outputRange: [-30, 45],
   });
+  const screenBackgroundColor = partyChromeTransition.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['#FCF1E9', '#000000'],
+  });
+  const dockTones = isPartyMode ? DARK_DOCK_TONES : DOCK_TONES;
+
   return (
-    <View style={[styles.screen, { paddingTop: insets.top + 16 }]}>
-      <StatusBar style="dark" />
-      <View style={styles.playAreaOuter}>
+    <Animated.View style={[styles.screen, { backgroundColor: screenBackgroundColor, paddingTop: insets.top + 16 }]}>
+      <StatusBar style={isPartyMode || isPartyVisualVisible ? 'light' : 'dark'} />
+      <View style={[styles.playAreaOuter, isPartyMode && styles.playAreaOuterParty]}>
         <View style={styles.playAreaInner} onLayout={handlePlayAreaLayout}>
         {isPartyVisualVisible ? (
           <Animated.View pointerEvents="none" style={[styles.partyBackdrop, { opacity: partyTransition }]}>
@@ -453,13 +621,22 @@ export default function HomeScreen() {
           <View style={styles.previewFrame}>
             <PlushMeshViewer
               backgroundColor="#FCF1E9"
+              focusedPlushId={focusedPlushId}
+              onEmptyPress={() => setFocusedPlushId(null)}
               onPlushDragChange={setIsHoldingPlush}
               onPlushDrop={handlePlushDrop}
+              onPlushPress={focusPlush}
               partyPulseKey={partyPulseKey}
               plushes={plushes}
-              physicsEnabled
+              physicsEnabled={!focusedPlushId}
               onPlushesPrepared={() => setIsPreparingPlush(false)}
             />
+          </View>
+        ) : null}
+
+        {focusedPlush ? (
+          <View pointerEvents="none" style={styles.nameTag}>
+            <Text style={[styles.nameTagText, { fontFamily: dockLabelFontFamily }]}>{focusedPlush.name}</Text>
           </View>
         ) : null}
 
@@ -485,7 +662,7 @@ export default function HomeScreen() {
           </View>
         ) : null}
 
-        {playAreaSize.width > 0 && playAreaSize.height > 0 ? (
+        {playAreaSize.width > 0 && playAreaSize.height > 0 && !isPartyMode ? (
           <View pointerEvents="none" style={styles.playAreaDashOverlay}>
             <Svg width={playAreaSize.width} height={playAreaSize.height}>
               <Rect
@@ -516,48 +693,85 @@ export default function HomeScreen() {
 
       <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 32) }]}>
         <View style={styles.bottomButtonRow}>
-          <ActionButton
-            accessibilityLabel="Choose photo"
-            disabled={isWorking}
-            fontFamily={dockLabelFontFamily}
-            icon={(color) => <PhotoLibraryIcon color={color} />}
-            label="Library"
-            onPress={pickImage}
-            tone={DOCK_TONES.library}
-          />
+          {focusedPlush ? (
+            <>
+              <View style={styles.focusSingleActionFrame}>
+                <ActionButton
+                  accessibilityLabel="Back to all plushies"
+                  fontFamily={dockLabelFontFamily}
+                  icon={(color) => <BackIcon color={color} />}
+                  label="Back"
+                  onPress={() => setFocusedPlushId(null)}
+                  tone={FOCUS_DOCK_TONES.back}
+                />
+              </View>
 
-          <ActionButton
-            accessibilityLabel="Take photo"
-            disabled={isWorking}
-            fontFamily={dockLabelFontFamily}
-            icon={(color) => <CameraIcon color={color} />}
-            label="Camera"
-            onPress={takePhoto}
-            tone={DOCK_TONES.camera}
-          />
+              <View style={styles.focusPairedActionFrame}>
+                <ActionButton
+                  accessibilityLabel="Edit plush name"
+                  fontFamily={dockLabelFontFamily}
+                  icon={(color) => <EditIcon color={color} />}
+                  label="Edit"
+                  onPress={editFocusedPlushName}
+                  tone={FOCUS_DOCK_TONES.edit}
+                />
 
-          <ActionButton
-            accessibilityLabel={isPartyMode ? 'Stop party' : 'Start party'}
-            disabled={isWorking || plushes.length === 0}
-            fontFamily={dockLabelFontFamily}
-            icon={(color) => <PartyIcon color={color} />}
-            label="Party"
-            onPress={() => setIsPartyMode((currentValue) => !currentValue)}
-            tone={DOCK_TONES.party}
-          />
+                <ActionButton
+                  accessibilityLabel="Delete plush"
+                  fontFamily={dockLabelFontFamily}
+                  icon={(color) => <DeleteIcon color={color} />}
+                  label="Delete"
+                  onPress={deleteFocusedPlush}
+                  tone={FOCUS_DOCK_TONES.delete}
+                />
+              </View>
+            </>
+          ) : (
+            <>
+              <ActionButton
+                accessibilityLabel="Choose photo"
+                disabled={isWorking}
+                fontFamily={dockLabelFontFamily}
+                icon={(color) => <PhotoLibraryIcon color={color} />}
+                label="Library"
+                onPress={pickImage}
+                tone={dockTones.library}
+              />
 
-          <ActionButton
-            accessibilityLabel="Reset plushies"
-            disabled={isWorking || plushes.length === 0}
-            fontFamily={dockLabelFontFamily}
-            icon={(color) => <ResetIcon color={color} />}
-            label="Reset"
-            onPress={resetPlushes}
-            tone={DOCK_TONES.reset}
-          />
+              <ActionButton
+                accessibilityLabel="Take photo"
+                disabled={isWorking}
+                fontFamily={dockLabelFontFamily}
+                icon={(color) => <CameraIcon color={color} />}
+                label="Camera"
+                onPress={takePhoto}
+                tone={dockTones.camera}
+              />
+
+              <ActionButton
+                accessibilityLabel={isPartyMode ? 'Stop party' : 'Start party'}
+                disabled={isWorking || plushes.length === 0}
+                fontFamily={dockLabelFontFamily}
+                icon={(color) => <PartyIcon color={color} />}
+                label="Party"
+                onPress={() => setIsPartyMode((currentValue) => !currentValue)}
+                tone={dockTones.party}
+              />
+
+              <ActionButton
+                accessibilityLabel="Reset plushies"
+                disabled={isWorking || plushes.length === 0}
+                fontFamily={dockLabelFontFamily}
+                icon={(color) => <ResetIcon color={color} />}
+                label="Reset"
+                onPress={resetPlushes}
+                tone={dockTones.reset}
+              />
+            </>
+          )}
         </View>
       </View>
-    </View>
+    </Animated.View>
   );
 }
 
@@ -577,6 +791,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.16,
     shadowRadius: 16,
     elevation: 7,
+  },
+  playAreaOuterParty: {
+    padding: 0,
   },
   playAreaInner: {
     flex: 1,
@@ -634,6 +851,23 @@ const styles = StyleSheet.create({
     height: 180,
     resizeMode: 'contain',
   },
+  nameTag: {
+    position: 'absolute',
+    top: '30%',
+    zIndex: 6,
+    alignSelf: 'center',
+    borderRadius: 10,
+    backgroundColor: 'rgba(52, 48, 48, 0.88)',
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+  },
+  nameTagText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: 0,
+    lineHeight: 18,
+  },
   trashButton: {
     position: 'absolute',
     zIndex: 6,
@@ -670,6 +904,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
     justifyContent: 'space-between',
+  },
+  focusSingleActionFrame: {
+    width: 82,
+  },
+  focusPairedActionFrame: {
+    width: 172,
+    flexDirection: 'row',
+    gap: 8,
   },
   actionButtonOuter: {
     flex: 1,

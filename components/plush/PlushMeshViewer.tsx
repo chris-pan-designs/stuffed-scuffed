@@ -11,8 +11,11 @@ import type { DetectedOutline } from '@/lib/outlineDetection';
 
 type PlushMeshViewerProps = {
   backgroundColor?: string;
+  focusedPlushId?: string | null;
+  onEmptyPress?: () => void;
   onPlushDragChange?: (isDragging: boolean) => void;
   onPlushDrop?: (plushId: string, point: { x: number; y: number }) => void;
+  onPlushPress?: (plushId: string) => void;
   onPlushesPrepared?: () => void;
   partyPulseKey?: number;
   plushes: {
@@ -167,6 +170,11 @@ const PLUSH_DEPTH_SPACING = 0.045;
 const PLUSH_MAX_DEPTH = 0.14;
 const MAX_COLLISION_SAMPLE_POINTS = 520;
 const PHYSICS_SCREEN_COLLISION_CELL_SIZE = 0.035;
+const FOCUS_FLOAT_AMPLITUDE = 0.08;
+const FOCUS_FLOAT_SPEED = 0.0018;
+const FOCUS_LERP = 0.09;
+const FOCUS_OTHER_OPACITY = 0;
+const TAP_MOVE_THRESHOLD = 10;
 const SHADOW_BASE_OPACITY = 0.14;
 const SHADOW_MIN_OPACITY = 0.025;
 const SHADOW_MAX_LIFT = 4.2;
@@ -757,6 +765,27 @@ const applyPartyPulse = (runtimes: PlushRuntime[], pulseKey: number) => {
   });
 };
 
+const setRuntimeOpacity = (runtime: PlushRuntime, opacity: number) => {
+  runtime.mesh.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) {
+      return;
+    }
+
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+
+    materials.forEach((material) => {
+      const meshMaterial = material as THREE.MeshBasicMaterial;
+
+      meshMaterial.transparent = true;
+      meshMaterial.opacity += (opacity - meshMaterial.opacity) * 0.14;
+      meshMaterial.needsUpdate = true;
+    });
+  });
+
+  runtime.shadow.material.opacity +=
+    (opacity <= FOCUS_OTHER_OPACITY ? 0 : SHADOW_BASE_OPACITY - runtime.shadow.material.opacity) * 0.14;
+};
+
 const getRotatedHalfExtents = (physics: PhysicsState, rotationZ: number) => {
   const cos = Math.abs(Math.cos(rotationZ));
   const sin = Math.abs(Math.sin(rotationZ));
@@ -856,6 +885,35 @@ const updatePlushShadow = (runtime: PlushRuntime, state: SceneState, isVisible =
   runtime.shadow.scale.set(width, height, 1);
   runtime.shadow.material.opacity =
     SHADOW_MIN_OPACITY + (SHADOW_BASE_OPACITY - SHADOW_MIN_OPACITY) * (1 - normalizedLift);
+};
+
+const applyFocusFrame = (runtimes: PlushRuntime[], focusedPlushId: string, state: SceneState, frameTime: number) => {
+  const focusedRuntime = runtimes.find((runtime) => runtime.id === focusedPlushId);
+
+  runtimes.forEach((runtime) => {
+    const isFocused = runtime.id === focusedPlushId;
+
+    setRuntimeOpacity(runtime, isFocused ? 1 : FOCUS_OTHER_OPACITY);
+    runtime.shadow.visible = false;
+
+    if (!isFocused) {
+      return;
+    }
+
+    const floatY = Math.sin(frameTime * FOCUS_FLOAT_SPEED) * FOCUS_FLOAT_AMPLITUDE;
+    const targetPosition = new THREE.Vector3(0, -state.viewportWorldHeight * 0.04 + floatY, runtime.depthZ);
+
+    runtime.physics.dragging = false;
+    runtime.physics.velocity.set(0, 0, 0);
+    runtime.physics.angularVelocity.multiplyScalar(0.86);
+    runtime.physics.position.lerp(targetPosition, FOCUS_LERP);
+    runtime.mesh.position.copy(runtime.physics.position);
+    resetPlushSoftness(runtime.mesh, runtime.softness);
+  });
+
+  if (focusedRuntime) {
+    focusedRuntime.mesh.position.z = focusedRuntime.depthZ;
+  }
 };
 
 const createPhysicsState = (): PhysicsState => ({
@@ -1575,8 +1633,11 @@ const isTouchOnPlush = (
 
 export function PlushMeshViewer({
   backgroundColor = '#FFFFFF',
+  focusedPlushId = null,
+  onEmptyPress,
   onPlushDragChange,
   onPlushDrop,
+  onPlushPress,
   onPlushesPrepared,
   partyPulseKey = 0,
   plushes,
@@ -1598,8 +1659,10 @@ export function PlushMeshViewer({
   const previousAccelerationRef = useRef(new THREE.Vector3());
   const lastShakeTimeRef = useRef(0);
   const physicsEnabledRef = useRef(physicsEnabled);
+  const focusedPlushIdRef = useRef<string | null>(focusedPlushId);
   const rotationRef = useRef(DEFAULT_ROTATION);
   const gestureStartRotationRef = useRef(DEFAULT_ROTATION);
+  const gestureStartedOnEmptyRef = useRef(false);
 
   useEffect(() => {
     if (!physicsEnabledRef.current || partyPulseKey <= 0) {
@@ -1612,6 +1675,12 @@ export function PlushMeshViewer({
   useEffect(() => {
     physicsEnabledRef.current = physicsEnabled;
   }, [physicsEnabled]);
+
+  useEffect(() => {
+    focusedPlushIdRef.current = focusedPlushId;
+    activeRuntimeRef.current = null;
+    onPlushDragChange?.(false);
+  }, [focusedPlushId, onPlushDragChange]);
 
   useEffect(() => {
     let isMounted = true;
@@ -1655,13 +1724,33 @@ export function PlushMeshViewer({
     () =>
       PanResponder.create({
         onStartShouldSetPanResponder: (event) =>
+          Boolean(focusedPlushIdRef.current) ||
           Boolean(isTouchOnPlush(stateRef.current, runtimesRef.current, layoutRef.current, event)),
         onMoveShouldSetPanResponder: (event) =>
+          Boolean(focusedPlushIdRef.current) ||
           Boolean(isTouchOnPlush(stateRef.current, runtimesRef.current, layoutRef.current, event)),
         onPanResponderGrant: (event: GestureResponderEvent) => {
           const runtime = isTouchOnPlush(stateRef.current, runtimesRef.current, layoutRef.current, event);
+          const focusedPlushId = focusedPlushIdRef.current;
+
+          if (focusedPlushId) {
+            activeRuntimeRef.current = runtime?.id === focusedPlushId ? runtime : null;
+            gestureStartedOnEmptyRef.current = !activeRuntimeRef.current;
+            const activeMesh = activeRuntimeRef.current?.mesh;
+
+            if (activeMesh) {
+              gestureStartRotationRef.current = {
+                x: activeMesh.rotation.x,
+                y: activeMesh.rotation.y,
+                z: activeMesh.rotation.z,
+              };
+            }
+
+            return;
+          }
 
           activeRuntimeRef.current = runtime;
+          gestureStartedOnEmptyRef.current = !runtime;
 
           if (physicsEnabled && runtime) {
             const physics = runtime.physics;
@@ -1691,6 +1780,16 @@ export function PlushMeshViewer({
         },
         onPanResponderMove: (event, gesture) => {
           const activeRuntime = activeRuntimeRef.current;
+          const focusedPlushId = focusedPlushIdRef.current;
+
+          if (focusedPlushId) {
+            if (activeRuntime?.id === focusedPlushId) {
+              activeRuntime.mesh.rotation.x = gestureStartRotationRef.current.x + gesture.dy * 0.01;
+              activeRuntime.mesh.rotation.y = gestureStartRotationRef.current.y + gesture.dx * 0.01;
+            }
+
+            return;
+          }
 
           if (physicsEnabled && activeRuntime) {
             const physics = activeRuntime.physics;
@@ -1738,6 +1837,19 @@ export function PlushMeshViewer({
         },
         onPanResponderRelease: (_, gesture) => {
           const activeRuntime = activeRuntimeRef.current;
+          const movedDistance = Math.hypot(gesture.dx, gesture.dy);
+          const focusedPlushId = focusedPlushIdRef.current;
+
+          if (focusedPlushId) {
+            if (gestureStartedOnEmptyRef.current && movedDistance < TAP_MOVE_THRESHOLD) {
+              onEmptyPress?.();
+            }
+
+            activeRuntimeRef.current = null;
+            gestureStartedOnEmptyRef.current = false;
+            onPlushDragChange?.(false);
+            return;
+          }
 
           if (!physicsEnabled || !activeRuntime) {
             activeRuntimeRef.current = null;
@@ -1768,12 +1880,18 @@ export function PlushMeshViewer({
           );
 
           physics.dragging = false;
-          physics.velocity.copy(releaseVelocity);
-          physics.angularVelocity.multiplyScalar(0.9);
-          physics.angularVelocity.addScaledVector(torque, PHYSICS_RELEASE_TORQUE);
-          physics.angularVelocity.addScaledVector(tumble, PHYSICS_THROW_TUMBLE);
-          clampAngularVelocity(physics.angularVelocity);
-          onPlushDrop?.(activeRuntime.id, { x: gesture.moveX, y: gesture.moveY });
+          if (movedDistance < TAP_MOVE_THRESHOLD) {
+            onPlushPress?.(activeRuntime.id);
+            physics.velocity.set(0, 0, 0);
+            physics.angularVelocity.set(0, 0, 0);
+          } else {
+            physics.velocity.copy(releaseVelocity);
+            physics.angularVelocity.multiplyScalar(0.9);
+            physics.angularVelocity.addScaledVector(torque, PHYSICS_RELEASE_TORQUE);
+            physics.angularVelocity.addScaledVector(tumble, PHYSICS_THROW_TUMBLE);
+            clampAngularVelocity(physics.angularVelocity);
+            onPlushDrop?.(activeRuntime.id, { x: gesture.moveX, y: gesture.moveY });
+          }
           activeRuntimeRef.current = null;
           onPlushDragChange?.(false);
         },
@@ -1785,7 +1903,7 @@ export function PlushMeshViewer({
           }
         },
       }),
-    [onPlushDragChange, onPlushDrop, physicsEnabled]
+    [onEmptyPress, onPlushDragChange, onPlushDrop, onPlushPress, physicsEnabled]
   );
 
   useEffect(() => {
@@ -1896,8 +2014,13 @@ export function PlushMeshViewer({
 
     const render = (frameTime: number) => {
       stateRef.current.animationFrame = requestAnimationFrame(render);
-      if (physicsEnabledRef.current) {
+      const focusedPlushId = focusedPlushIdRef.current;
+
+      if (focusedPlushId) {
+        applyFocusFrame(runtimesRef.current, focusedPlushId, stateRef.current, frameTime);
+      } else if (physicsEnabledRef.current) {
         runtimesRef.current.forEach((runtime) => {
+          setRuntimeOpacity(runtime, 1);
           applyPhysicsFrame(
             runtime.mesh,
             runtime.physics,
@@ -1916,6 +2039,11 @@ export function PlushMeshViewer({
           runtime.physics.position.z = runtime.depthZ;
           runtime.mesh.position.copy(runtime.physics.position);
           updatePlushShadow(runtime, stateRef.current, true);
+        });
+      } else {
+        runtimesRef.current.forEach((runtime) => {
+          setRuntimeOpacity(runtime, 1);
+          runtime.shadow.visible = false;
         });
       }
       renderer.render(scene, camera);
