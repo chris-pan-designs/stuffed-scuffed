@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Animated,
   Easing,
@@ -257,6 +256,7 @@ const PetIcon = ({ color }: { color: string }) => (
 
 const discoGif = require('@/assets/party mode assets/disco.gif');
 const pettingGif = require('@/assets/petting.gif');
+const scribblingGif = require('@/assets/scribbling.gif');
 const sparklesGif = require('@/assets/party mode assets/sparkles.gif');
 const PETTING_GIF_LOOP_MS = 350;
 const PETTING_GIF_PLAY_COUNT = 3;
@@ -330,6 +330,7 @@ export default function HomeScreen() {
   const partyChromeTransition = useRef(new Animated.Value(0)).current;
   const partyGradientMotion = useRef(new Animated.Value(0)).current;
   const focusModeTransition = useRef(new Animated.Value(0)).current;
+  const loadingTransition = useRef(new Animated.Value(0)).current;
   const petTransition = useRef(new Animated.Value(0)).current;
   const pettingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nameTagPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
@@ -417,6 +418,15 @@ export default function HomeScreen() {
   }, [focusedPlushId, plushes]);
 
   useEffect(() => {
+    Animated.timing(loadingTransition, {
+      toValue: isWorking ? 1 : 0,
+      duration: isWorking ? 260 : 140,
+      easing: isWorking ? Easing.out(Easing.cubic) : Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [isWorking, loadingTransition]);
+
+  useEffect(() => {
     Animated.timing(focusModeTransition, {
       toValue: focusedPlush ? 1 : 0,
       duration: 420,
@@ -446,17 +456,21 @@ export default function HomeScreen() {
   const addPlush = (imageUri: string) => {
     setIsPreparingPlush(true);
 
-    requestAnimationFrame(() => {
-      setPlushes((currentPlushes) => [
-        ...currentPlushes,
-        {
-          id: `${Date.now()}-${currentPlushes.length}`,
-          imageUri,
-          name: `plush ${currentPlushes.length + 1}`,
-          outline: detectOutlineFromPngDataUri(imageUri),
-        },
-      ]);
-    });
+    setTimeout(() => {
+      requestAnimationFrame(() => {
+        const outline = detectOutlineFromPngDataUri(imageUri);
+
+        setPlushes((currentPlushes) => [
+          ...currentPlushes,
+          {
+            id: `${Date.now()}-${currentPlushes.length}`,
+            imageUri,
+            name: `plush ${currentPlushes.length + 1}`,
+            outline,
+          },
+        ]);
+      });
+    }, 0);
   };
 
   const readImageAsDataUri = async (uri: string) => {
@@ -847,10 +861,12 @@ export default function HomeScreen() {
         ) : null}
 
         {isWorking ? (
-          <View style={styles.loadingPill}>
-            <ActivityIndicator color="#FFFFFF" />
-            <Text style={styles.loadingText}>{isRemovingBackground ? 'Cutting out...' : 'Preparing plush...'}</Text>
-          </View>
+          <Animated.View pointerEvents="none" style={[styles.loadingState, { opacity: loadingTransition }]}>
+            <Image source={scribblingGif} style={styles.loadingScribble} />
+            <View style={styles.loadingNameTag}>
+              <Text style={[styles.loadingText, { fontFamily: dockLabelFontFamily }]}>Stuffing...</Text>
+            </View>
+          </Animated.View>
         ) : null}
         </View>
       </View>
@@ -1079,22 +1095,41 @@ const styles = StyleSheet.create({
     borderRadius: 35,
     backgroundColor: '#FF4650',
   },
-  loadingPill: {
+  loadingState: {
     position: 'absolute',
     zIndex: 6,
-    alignSelf: 'center',
-    flexDirection: 'row',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
     alignItems: 'center',
-    gap: 10,
-    borderRadius: 999,
-    backgroundColor: 'rgba(30, 30, 30, 0.72)',
-    paddingHorizontal: 18,
-    paddingVertical: 12,
+    justifyContent: 'center',
+    gap: 26,
+  },
+  loadingScribble: {
+    width: 240,
+    height: 240,
+    resizeMode: 'contain',
+  },
+  loadingNameTag: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    borderRadius: 14,
+    backgroundColor: '#FBF5EF',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.16,
+    shadowRadius: 16,
+    elevation: 7,
   },
   loadingText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
+    color: '#353535',
+    fontSize: 14,
+    fontWeight: '600',
+    letterSpacing: 0,
+    lineHeight: 17,
   },
   bottomBar: {
     paddingLeft: 20,
