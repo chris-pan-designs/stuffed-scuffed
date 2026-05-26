@@ -1,8 +1,7 @@
-const PHOTOROOM_SEGMENT_URL = 'https://sdk.photoroom.com/v1/segment';
+const REMOVE_BG_URL = 'https://api.remove.bg/v1.0/removebg';
 
 export type RemoveBackgroundResult = {
   cutoutUri: string;
-  maskUri: string;
 };
 
 type LocalImage = {
@@ -11,7 +10,7 @@ type LocalImage = {
   mimeType?: string;
 };
 
-const getPhotoRoomApiKey = () => process.env.EXPO_PUBLIC_PHOTOROOM_API_KEY;
+const getRemoveBgApiKey = () => process.env.EXPO_PUBLIC_REMOVE_BG_API_KEY;
 
 const getUploadName = (image: LocalImage) => image.fileName || 'plush-photo.jpg';
 
@@ -34,7 +33,7 @@ const blobToDataUri = (blob: Blob, errorMessage: string) =>
     reader.readAsDataURL(blob);
   });
 
-const createImageFormData = (image: LocalImage, mode: 'cutout' | 'mask') => {
+const createImageFormData = (image: LocalImage) => {
   const formData = new FormData();
 
   formData.append('image_file', {
@@ -42,44 +41,38 @@ const createImageFormData = (image: LocalImage, mode: 'cutout' | 'mask') => {
     name: getUploadName(image),
     type: getUploadType(image),
   } as unknown as Blob);
+  formData.append('size', 'auto');
   formData.append('format', 'png');
-
-  if (mode === 'mask') {
-    formData.append('channels', 'alpha');
-  }
 
   return formData;
 };
 
-const requestPhotoroomImage = async (image: LocalImage, mode: 'cutout' | 'mask') => {
-  const apiKey = getPhotoRoomApiKey();
+const requestRemoveBgImage = async (image: LocalImage) => {
+  const apiKey = getRemoveBgApiKey();
 
   if (!apiKey) {
-    throw new Error('Missing Photoroom API key. Add EXPO_PUBLIC_PHOTOROOM_API_KEY to your .env file.');
+    throw new Error('Missing remove.bg API key. Add EXPO_PUBLIC_REMOVE_BG_API_KEY to your .env file.');
   }
 
-  const response = await fetch(PHOTOROOM_SEGMENT_URL, {
+  const response = await fetch(REMOVE_BG_URL, {
     method: 'POST',
     headers: {
-      'x-api-key': apiKey,
+      'X-API-Key': apiKey,
     },
-    body: createImageFormData(image, mode),
+    body: createImageFormData(image),
   });
 
   if (!response.ok) {
     const message = await response.text();
-    throw new Error(message || 'Photoroom could not remove the background.');
+    throw new Error(message || 'remove.bg could not remove the background.');
   }
 
   const blob = await response.blob();
-  return blobToDataUri(blob, 'Photoroom returned an unreadable image.');
+  return blobToDataUri(blob, 'remove.bg returned an unreadable image.');
 };
 
 export async function removeBackground(image: LocalImage): Promise<RemoveBackgroundResult> {
-  const [cutoutUri, maskUri] = await Promise.all([
-    requestPhotoroomImage(image, 'cutout'),
-    requestPhotoroomImage(image, 'mask'),
-  ]);
+  const cutoutUri = await requestRemoveBgImage(image);
 
-  return { cutoutUri, maskUri };
+  return { cutoutUri };
 }

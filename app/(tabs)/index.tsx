@@ -14,6 +14,7 @@ import {
   type LayoutChangeEvent,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import { useFonts } from 'expo-font';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
@@ -287,6 +288,7 @@ const FOCUSED_DELETE_REVEAL_DELAY_MS = 500;
 const NAME_TAG_MAX_WIDTH = 280;
 const NAME_TAG_HORIZONTAL_PADDING = 12;
 const NAME_TAG_TEXT_MAX_WIDTH = NAME_TAG_MAX_WIDTH - NAME_TAG_HORIZONTAL_PADDING * 2;
+const BACKGROUND_REMOVAL_MAX_IMAGE_SIZE = 1024;
 
 type ActionButtonProps = {
   accessibilityLabel: string;
@@ -652,10 +654,23 @@ export default function HomeScreen() {
         return;
       }
 
+      const longestSide = Math.max(selectedImage.width, selectedImage.height);
+      const resizeAction =
+        longestSide > BACKGROUND_REMOVAL_MAX_IMAGE_SIZE
+          ? [
+              selectedImage.width >= selectedImage.height
+                ? { resize: { width: BACKGROUND_REMOVAL_MAX_IMAGE_SIZE } }
+                : { resize: { height: BACKGROUND_REMOVAL_MAX_IMAGE_SIZE } },
+            ]
+          : [];
+      const normalizedImage = await ImageManipulator.manipulateAsync(selectedImage.uri, resizeAction, {
+        compress: 1,
+        format: ImageManipulator.SaveFormat.PNG,
+      });
       const cutout = await removeBackground({
-        uri: selectedImage.uri,
-        fileName: selectedImage.fileName,
-        mimeType: selectedImage.mimeType,
+        uri: normalizedImage.uri,
+        fileName: 'plush-photo.png',
+        mimeType: 'image/png',
       });
 
       addPlush(cutout.cutoutUri);
@@ -1282,7 +1297,7 @@ export default function HomeScreen() {
                   accessibilityLabel="Delete plush"
                   fontFamily={dockLabelFontFamily}
                   icon={(color) => <DeleteIcon color={color} />}
-                  label="Delete"
+                  label="Scrap"
                   onPress={showFocusedDeleteModal}
                   tone={FOCUS_DOCK_TONES.delete}
                 />
@@ -1323,7 +1338,7 @@ export default function HomeScreen() {
                     accessibilityLabel="Confirm reset"
                     fontFamily={dockLabelFontFamily}
                     icon={(color) => <DeleteIcon color={color} />}
-                    label="Delete"
+                    label="Scrap"
                     onPress={confirmDestructiveAction}
                     tone={FOCUS_DOCK_TONES.delete}
                   />
