@@ -2,18 +2,19 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   Alert,
   Animated,
+  Dimensions,
   Easing,
   Image,
+  Keyboard,
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
   type LayoutChangeEvent,
-  type LayoutRectangle,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useFonts } from 'expo-font';
-import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import Svg, { Path, Rect } from 'react-native-svg';
@@ -36,6 +37,8 @@ type DockButtonTone = {
   outerBackground: string;
   primary: string;
 };
+
+type ConfirmationModalIntent = 'deleteFocused' | 'reset';
 
 const DOCK_TONES = {
   library: {
@@ -162,6 +165,16 @@ const PartyIcon = ({ color }: { color: string }) => (
       fill={color}
     />
     <Path
+      opacity={0.28}
+      d="M15.9993 11C15.447 11 14.9993 11.4477 14.9993 12C14.9993 12.5523 15.447 13 15.9993 13H16.0093C16.5616 13 17.0093 12.5523 17.0093 12C17.0093 11.4477 16.5616 11 16.0093 11H15.9993Z"
+      fill={color}
+    />
+    <Path
+      opacity={0.28}
+      d="M16.8581 14.0105C19.0444 13.6981 21.4747 14.182 22.857 16.4859C23.1412 16.9595 22.9876 17.5738 22.514 17.8579C22.0404 18.1421 21.4262 17.9885 21.142 17.5149C20.3317 16.1643 18.8865 15.741 17.1409 15.9904C16.5942 16.0685 16.0877 15.6886 16.0096 15.1418C15.9315 14.5951 16.3114 14.0886 16.8581 14.0105Z"
+      fill={color}
+    />
+    <Path
       d="M12.9998 4C12.9998 3.44772 13.4475 3 13.9998 3H14.0098C14.562 3 15.0098 3.44772 15.0098 4C15.0098 4.55228 14.562 5 14.0098 5H13.9998C13.4475 5 12.9998 4.55228 12.9998 4Z"
       fill={color}
     />
@@ -186,7 +199,7 @@ const ResetIcon = ({ color }: { color: string }) => (
       stroke={color}
       strokeLinecap="round"
       strokeLinejoin="round"
-      strokeWidth={1.8}
+      strokeWidth={2}
     />
   </Svg>
 );
@@ -194,7 +207,7 @@ const ResetIcon = ({ color }: { color: string }) => (
 const BackIcon = ({ color }: { color: string }) => (
   <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
     <Path
-      d="M8.03089 3.91602C6.57669 4.97466 5.2706 6.21138 4.14485 7.59488C4.04828 7.71356 4 7.85646 4 7.99935M8.03089 12.0827C6.57669 11.024 5.2706 9.78732 4.14485 8.40382C4.04828 8.28513 4 8.14224 4 7.99935M4 7.99935H15C17.7614 7.99935 20 10.2379 20 12.9993C20 15.7608 17.7614 17.9993 15 17.9993H12"
+      d="M8.03089 4C6.57669 5.12755 5.2706 6.44477 4.14485 7.91832C4.04828 8.04473 4 8.19692 4 8.34911M8.03089 12.6982C6.57669 11.5707 5.2706 10.2535 4.14485 8.77991C4.04828 8.6535 4 8.50131 4 8.34911M4 8.34911H15C17.7614 8.34911 20 10.7334 20 13.6746C20 16.6157 17.7614 19 15 19H12"
       stroke={color}
       strokeLinecap="round"
       strokeLinejoin="round"
@@ -241,14 +254,14 @@ const PetIcon = ({ color }: { color: string }) => (
   <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
     <Path
       opacity={0.28}
-      d="M15.4234 12.9997H19.8945C21.2581 12.9997 23.3623 11.3126 21.8448 10.0028C17.4998 5.99971 10.4998 5.99971 5.99985 10.0864M15.4234 12.9997C15.5518 12.8434 15.664 12.6715 15.7568 12.4859C16.0982 11.8031 15.6016 10.9997 14.8382 10.9997H9.99985M15.4234 12.9997C14.9099 13.6247 14.1371 13.9997 13.3074 13.9997H12.1851C12.0633 13.9997 11.9431 14.0281 11.8341 14.0826C10.0283 14.9855 8.00072 15.3464 5.99609 15.1233C5.99858 15.0824 5.99985 15.0412 5.99985 14.9997V10.0864M5.99985 10.0864V9.99971"
+      d="M15.2108 13.5919H19.5792C20.9115 13.5919 22.9674 11.7349 21.4848 10.2932C17.2396 5.88704 10.4003 5.88704 6.00367 10.3853M15.2108 13.5919C15.3362 13.4199 15.4458 13.2307 15.5365 13.0264C15.8701 12.2748 15.385 11.3905 14.6391 11.3905H9.91181M15.2108 13.5919C14.7091 14.2798 13.9541 14.6926 13.1434 14.6926H12.0469C11.9279 14.6926 11.8104 14.7238 11.704 14.7838C9.93957 15.7777 7.95859 16.1749 6 15.9293C6.00243 15.8843 6.00367 15.839 6.00367 15.7933V10.3853M6.00367 10.3853V10.2898"
       stroke={color}
       strokeLinecap="round"
       strokeLinejoin="round"
       strokeWidth={2}
     />
     <Path
-      d="M1 15C1 16.6569 2.34315 18 4 18C5.65685 18 7 16.6569 7 15V10C7 8.34315 5.65685 7 4 7C2.34315 7 1 8.34315 1 10V15Z"
+      d="M1 15.7273C1 17.5347 2.34315 19 4 19C5.65685 19 7 17.5347 7 15.7273V10.2727C7 8.46525 5.65685 7 4 7C2.34315 7 1 8.46525 1 10.2727V15.7273Z"
       fill={color}
     />
   </Svg>
@@ -256,13 +269,24 @@ const PetIcon = ({ color }: { color: string }) => (
 
 const discoGif = require('@/assets/party mode assets/disco.gif');
 const pettingGif = require('@/assets/petting.gif');
+const poofGif = require('@/assets/poof.gif');
 const scribblingGif = require('@/assets/scribbling.gif');
 const sparklesGif = require('@/assets/party mode assets/sparkles.gif');
+const ESTIMATED_KEYBOARD_HEIGHT = 336;
 const PETTING_GIF_LOOP_MS = 350;
 const PETTING_GIF_PLAY_COUNT = 3;
 const PETTING_GIF_VISIBLE_MS = PETTING_GIF_LOOP_MS * PETTING_GIF_PLAY_COUNT;
 const PETTING_OVERLAY_WIDTH = 116;
 const PETTING_OVERLAY_TOP_OFFSET = 38;
+const POOF_OVERLAY_SIZE = 380;
+const POOF_VERTICAL_CENTER_OFFSET = 0;
+const RESET_GATHER_MS = 900;
+const FOCUSED_DELETE_SHAKE_MS = 1420;
+const POOF_VISIBLE_MS = 760;
+const FOCUSED_DELETE_REVEAL_DELAY_MS = 1000;
+const NAME_TAG_MAX_WIDTH = 280;
+const NAME_TAG_HORIZONTAL_PADDING = 12;
+const NAME_TAG_TEXT_MAX_WIDTH = NAME_TAG_MAX_WIDTH - NAME_TAG_HORIZONTAL_PADDING * 2;
 
 type ActionButtonProps = {
   accessibilityLabel: string;
@@ -274,69 +298,130 @@ type ActionButtonProps = {
   tone: DockButtonTone;
 };
 
-const ActionButton = ({ accessibilityLabel, disabled, fontFamily, icon, label, onPress, tone }: ActionButtonProps) => (
-  <Pressable
-    accessibilityLabel={accessibilityLabel}
-    accessibilityRole="button"
-    disabled={disabled}
-    onPress={onPress}
-    style={({ pressed }) => [
-      styles.actionButtonOuter,
-      { backgroundColor: tone.outerBackground },
-      pressed && !disabled && styles.actionButtonPressed,
-      disabled && styles.actionButtonDisabled,
-    ]}>
-    <View style={[styles.actionButtonInner, { backgroundColor: tone.background }]}>
-      <Svg pointerEvents="none" style={StyleSheet.absoluteFill} width="100%" height="100%">
-        <Rect
-          x={1}
-          y={1}
-          width={72}
-          height={59}
-          rx={18}
-          ry={18}
-          fill="none"
-          stroke={tone.border}
-          strokeDasharray="6 6"
-          strokeLinecap="butt"
-          strokeWidth={2}
-        />
-      </Svg>
-      {icon(tone.primary)}
-      <Text style={[styles.actionButtonLabel, { color: tone.primary, fontFamily }]}>{label}</Text>
+const DashedInnerFrame = ({ border, radius = 18 }: { border: string; radius?: number }) => {
+  const [size, setSize] = useState({ width: 0, height: 0 });
+
+  return (
+    <View
+      pointerEvents="none"
+      onLayout={(event) => {
+        const { width, height } = event.nativeEvent.layout;
+
+        setSize((currentSize) =>
+          currentSize.width === width && currentSize.height === height ? currentSize : { width, height }
+        );
+      }}
+      style={StyleSheet.absoluteFill}>
+      {size.width > 0 && size.height > 0 ? (
+        <Svg pointerEvents="none" style={StyleSheet.absoluteFill} width="100%" height="100%">
+          <Rect
+            x={1}
+            y={1}
+            width={Math.max(size.width - 2, 0)}
+            height={Math.max(size.height - 2, 0)}
+            rx={radius}
+            ry={radius}
+            fill="none"
+            stroke={border}
+            strokeDasharray="6 6"
+            strokeLinecap="butt"
+            strokeWidth={2}
+          />
+        </Svg>
+      ) : null}
     </View>
-  </Pressable>
-);
+  );
+};
+
+const ActionButton = ({
+  accessibilityLabel,
+  disabled,
+  fontFamily,
+  icon,
+  label,
+  onPress,
+  tone,
+}: ActionButtonProps) => {
+  return (
+    <Pressable
+      accessibilityLabel={accessibilityLabel}
+      accessibilityRole="button"
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.actionButtonOuter,
+        { backgroundColor: tone.outerBackground },
+        pressed && !disabled && styles.actionButtonPressed,
+        disabled && styles.actionButtonDisabled,
+      ]}>
+      <View style={[styles.actionButtonInner, { backgroundColor: tone.background }]}>
+        <DashedInnerFrame border={tone.border} />
+        {icon(tone.primary)}
+        <Text style={[styles.actionButtonLabel, { color: tone.primary, fontFamily }]}>{label}</Text>
+      </View>
+    </Pressable>
+  );
+};
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const [fontsLoaded] = useFonts({ PlusJakartaSans_600SemiBold });
   const dockLabelFontFamily = fontsLoaded ? 'PlusJakartaSans_600SemiBold' : undefined;
-  const trashButtonRef = useRef<View>(null);
-  const trashBoundsRef = useRef<LayoutRectangle | null>(null);
   const [plushes, setPlushes] = useState<PlushItem[]>([]);
-  const [isHoldingPlush, setIsHoldingPlush] = useState(false);
   const [isPartyMode, setIsPartyMode] = useState(false);
   const [isPartyVisualVisible, setIsPartyVisualVisible] = useState(false);
   const [partyPulseKey, setPartyPulseKey] = useState(0);
   const [isPreparingPlush, setIsPreparingPlush] = useState(false);
   const [isRemovingBackground, setIsRemovingBackground] = useState(false);
+  const [isLoadingVisualVisible, setIsLoadingVisualVisible] = useState(false);
+  const [confirmationModalIntent, setConfirmationModalIntent] = useState<ConfirmationModalIntent | null>(null);
+  const [isConfirmationModalMounted, setIsConfirmationModalMounted] = useState(false);
+  const [keyboardTopY, setKeyboardTopY] = useState<number | null>(null);
   const [playAreaSize, setPlayAreaSize] = useState({ width: 0, height: 0 });
+  const [playAreaWindowY, setPlayAreaWindowY] = useState(0);
   const [nameTagSize, setNameTagSize] = useState({ width: 0, height: 0 });
+  const [namingTextWidth, setNamingTextWidth] = useState(0);
   const [focusedPlushId, setFocusedPlushId] = useState<string | null>(null);
+  const [isDelayingDeletedPlushRelease, setIsDelayingDeletedPlushRelease] = useState(false);
   const [isPetting, setIsPetting] = useState(false);
+  const [isPoofVisible, setIsPoofVisible] = useState(false);
+  const [namingDraft, setNamingDraft] = useState('');
+  const [namingPlushId, setNamingPlushId] = useState<string | null>(null);
+  const [namingReleasesOnSubmit, setNamingReleasesOnSubmit] = useState(false);
+  const [pendingNamingPlushId, setPendingNamingPlushId] = useState<string | null>(null);
+  const [focusedDeleteShakeKey, setFocusedDeleteShakeKey] = useState(0);
+  const [globalGatherKey, setGlobalGatherKey] = useState(0);
+  const [globalDeleteShakeKey, setGlobalDeleteShakeKey] = useState(0);
   const [petPulseKey, setPetPulseKey] = useState(0);
   const partyTransition = useRef(new Animated.Value(0)).current;
   const partyChromeTransition = useRef(new Animated.Value(0)).current;
   const partyGradientMotion = useRef(new Animated.Value(0)).current;
   const focusModeTransition = useRef(new Animated.Value(0)).current;
   const loadingTransition = useRef(new Animated.Value(0)).current;
+  const resetModalTransition = useRef(new Animated.Value(0)).current;
+  const focusedDeleteTransition = useRef(new Animated.Value(0)).current;
+  const namingInputRef = useRef<TextInput>(null);
   const petTransition = useRef(new Animated.Value(0)).current;
+  const playAreaInnerRef = useRef<View>(null);
   const pettingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nameTagPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
   const petPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const poofPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const focusedDeleteTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const isWorking = isPreparingPlush || isRemovingBackground;
   const focusedPlush = plushes.find((plush) => plush.id === focusedPlushId);
+  const isNamingFocusedPlush = Boolean(namingPlushId && focusedPlush?.id === namingPlushId);
+  const namingInputText = namingDraft || 'Give them a name!';
+  const namingInputWidth = Math.min(
+    NAME_TAG_TEXT_MAX_WIDTH,
+    Math.ceil(Math.max(namingTextWidth, namingInputText.length * 7.7 + 3))
+  );
+  const estimatedKeyboardTopY = Dimensions.get('window').height - ESTIMATED_KEYBOARD_HEIGHT;
+  const namingKeyboardTopY = keyboardTopY ?? estimatedKeyboardTopY;
+  const focusedScreenY =
+    isNamingFocusedPlush && playAreaSize.height > 0
+      ? Math.max(0.18, Math.min(0.54, (namingKeyboardTopY - playAreaWindowY) / (2 * playAreaSize.height)))
+      : undefined;
 
   useEffect(() => {
     if (isPartyMode) {
@@ -361,6 +446,28 @@ export default function HomeScreen() {
       }
     });
   }, [isPartyMode, partyTransition]);
+
+  useEffect(() => {
+    const showSubscription = Keyboard.addListener('keyboardWillShow', (event) => {
+      setKeyboardTopY(event.endCoordinates.screenY);
+    });
+    const showFallbackSubscription = Keyboard.addListener('keyboardDidShow', (event) => {
+      setKeyboardTopY(event.endCoordinates.screenY);
+    });
+    const hideSubscription = Keyboard.addListener('keyboardWillHide', () => {
+      setKeyboardTopY(null);
+    });
+    const hideFallbackSubscription = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardTopY(null);
+    });
+
+    return () => {
+      showSubscription.remove();
+      showFallbackSubscription.remove();
+      hideSubscription.remove();
+      hideFallbackSubscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     Animated.timing(partyChromeTransition, {
@@ -413,18 +520,55 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (focusedPlushId && !plushes.some((plush) => plush.id === focusedPlushId)) {
+      if (isDelayingDeletedPlushRelease) {
+        return;
+      }
+
       setFocusedPlushId(null);
     }
-  }, [focusedPlushId, plushes]);
+  }, [focusedPlushId, isDelayingDeletedPlushRelease, plushes]);
 
   useEffect(() => {
+    if (isWorking) {
+      setIsLoadingVisualVisible(true);
+    }
+
     Animated.timing(loadingTransition, {
       toValue: isWorking ? 1 : 0,
       duration: isWorking ? 260 : 140,
       easing: isWorking ? Easing.out(Easing.cubic) : Easing.in(Easing.cubic),
       useNativeDriver: true,
-    }).start();
+    }).start(({ finished }) => {
+      if (finished && !isWorking) {
+        setIsLoadingVisualVisible(false);
+      }
+    });
   }, [isWorking, loadingTransition]);
+
+  useEffect(() => {
+    if (!isNamingFocusedPlush) {
+      return;
+    }
+
+    namingInputRef.current?.focus();
+  }, [isNamingFocusedPlush]);
+
+  useEffect(() => {
+    if (confirmationModalIntent) {
+      setIsConfirmationModalMounted(true);
+    }
+
+    Animated.timing(resetModalTransition, {
+      toValue: confirmationModalIntent ? 1 : 0,
+      duration: confirmationModalIntent ? 180 : 140,
+      easing: confirmationModalIntent ? Easing.out(Easing.cubic) : Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished && !confirmationModalIntent) {
+        setIsConfirmationModalMounted(false);
+      }
+    });
+  }, [confirmationModalIntent, resetModalTransition]);
 
   useEffect(() => {
     Animated.timing(focusModeTransition, {
@@ -449,6 +593,7 @@ export default function HomeScreen() {
       if (pettingTimeoutRef.current) {
         clearTimeout(pettingTimeoutRef.current);
       }
+      focusedDeleteTimeoutsRef.current.forEach(clearTimeout);
     },
     []
   );
@@ -459,16 +604,18 @@ export default function HomeScreen() {
     setTimeout(() => {
       requestAnimationFrame(() => {
         const outline = detectOutlineFromPngDataUri(imageUri);
+        const id = `${Date.now()}`;
 
         setPlushes((currentPlushes) => [
           ...currentPlushes,
           {
-            id: `${Date.now()}-${currentPlushes.length}`,
+            id,
             imageUri,
-            name: `plush ${currentPlushes.length + 1}`,
+            name: '',
             outline,
           },
         ]);
+        setPendingNamingPlushId(id);
       });
     }, 0);
   };
@@ -521,6 +668,8 @@ export default function HomeScreen() {
   };
 
   const pickImage = async () => {
+    setIsPartyMode(false);
+
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
 
     if (!permission.granted) {
@@ -542,6 +691,8 @@ export default function HomeScreen() {
   };
 
   const takePhoto = async () => {
+    setIsPartyMode(false);
+
     const permission = await ImagePicker.requestCameraPermissionsAsync();
 
     if (!permission.granted) {
@@ -561,41 +712,24 @@ export default function HomeScreen() {
     await createPlushFromImage(result.assets[0]);
   };
 
-  const measureTrashButton = () => {
-    trashButtonRef.current?.measureInWindow((x, y, width, height) => {
-      trashBoundsRef.current = { x, y, width, height };
-    });
+  const showResetModal = () => {
+    setConfirmationModalIntent('reset');
   };
 
-  const handlePlushDrop = (plushId: string, point: { x: number; y: number }) => {
-    const bounds = trashBoundsRef.current;
-
-    if (
-      !bounds ||
-      point.x < bounds.x ||
-      point.x > bounds.x + bounds.width ||
-      point.y < bounds.y ||
-      point.y > bounds.y + bounds.height
-    ) {
-      return;
-    }
-
-    setPlushes((currentPlushes) => currentPlushes.filter((plush) => plush.id !== plushId));
+  const showFocusedDeleteModal = () => {
+    setConfirmationModalIntent('deleteFocused');
   };
 
-  const resetPlushes = () => {
-    setPlushes([]);
-    setFocusedPlushId(null);
-    setIsPetting(false);
-    setIsHoldingPlush(false);
-    setIsPreparingPlush(false);
-    setIsPartyMode(false);
+  const hideConfirmationModal = () => {
+    setConfirmationModalIntent(null);
   };
 
   const focusPlush = (plushId: string) => {
     setIsPartyMode(false);
     setIsPetting(false);
-    setIsHoldingPlush(false);
+    setNamingDraft('');
+    setNamingPlushId(null);
+    setNamingReleasesOnSubmit(false);
     setFocusedPlushId(plushId);
   };
 
@@ -621,39 +755,143 @@ export default function HomeScreen() {
       return;
     }
 
-    Alert.prompt(
-      'Edit plush name',
-      undefined,
-      (nextName) => {
-        const trimmedName = nextName.trim();
-
-        if (!trimmedName) {
-          return;
-        }
-
-        setPlushes((currentPlushes) =>
-          currentPlushes.map((plush) =>
-            plush.id === focusedPlush.id ? { ...plush, name: trimmedName } : plush
-          )
-        );
-      },
-      'plain-text',
-      focusedPlush.name
-    );
+    setIsPetting(false);
+    setNamingDraft(focusedPlush.name);
+    setNamingPlushId(focusedPlush.id);
+    setNamingReleasesOnSubmit(false);
   };
 
-  const deleteFocusedPlush = () => {
+  const beginFocusedDeleteSequence = () => {
     if (!focusedPlush) {
+      setConfirmationModalIntent(null);
       return;
     }
 
-    setPlushes((currentPlushes) => currentPlushes.filter((plush) => plush.id !== focusedPlush.id));
+    const plushIdToDelete = focusedPlush.id;
+
+    focusedDeleteTimeoutsRef.current.forEach(clearTimeout);
+    focusedDeleteTimeoutsRef.current = [];
+    setConfirmationModalIntent(null);
     setIsPetting(false);
+    setNamingPlushId(null);
+    setNamingReleasesOnSubmit(false);
+    setNamingDraft('');
+    setIsPoofVisible(false);
+    setIsDelayingDeletedPlushRelease(false);
+    setFocusedDeleteShakeKey((currentKey) => currentKey + 1);
+
+    Animated.timing(focusedDeleteTransition, {
+      toValue: 1,
+      duration: 180,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+
+    const poofTimeout = setTimeout(() => {
+      setPlushes((currentPlushes) => currentPlushes.filter((plush) => plush.id !== plushIdToDelete));
+      setIsDelayingDeletedPlushRelease(true);
+      setIsPoofVisible(true);
+    }, FOCUSED_DELETE_SHAKE_MS);
+    const revealTimeout = setTimeout(() => {
+      setFocusedPlushId(null);
+      setIsDelayingDeletedPlushRelease(false);
+    }, FOCUSED_DELETE_SHAKE_MS + FOCUSED_DELETE_REVEAL_DELAY_MS);
+    const hidePoofTimeout = setTimeout(() => {
+      setIsPoofVisible(false);
+      focusedDeleteTransition.setValue(0);
+    }, FOCUSED_DELETE_SHAKE_MS + POOF_VISIBLE_MS);
+
+    focusedDeleteTimeoutsRef.current = [poofTimeout, revealTimeout, hidePoofTimeout];
+  };
+
+  const beginResetDeleteSequence = () => {
+    focusedDeleteTimeoutsRef.current.forEach(clearTimeout);
+    focusedDeleteTimeoutsRef.current = [];
+    setConfirmationModalIntent(null);
     setFocusedPlushId(null);
+    setNamingPlushId(null);
+    setNamingReleasesOnSubmit(false);
+    setNamingDraft('');
+    setIsPetting(false);
+    setIsPartyMode(false);
+    setIsPoofVisible(false);
+    setGlobalGatherKey((currentKey) => currentKey + 1);
+
+    const shakeTimeout = setTimeout(() => {
+      setGlobalDeleteShakeKey((currentKey) => currentKey + 1);
+    }, RESET_GATHER_MS);
+    const poofTimeout = setTimeout(() => {
+      poofPosition.setValue({
+        x: playAreaSize.width / 2 - POOF_OVERLAY_SIZE / 2,
+        y: playAreaSize.height / 2 - POOF_OVERLAY_SIZE / 2,
+      });
+      setPlushes([]);
+      setIsPoofVisible(true);
+    }, RESET_GATHER_MS + FOCUSED_DELETE_SHAKE_MS);
+    const hidePoofTimeout = setTimeout(() => {
+      setIsPoofVisible(false);
+    }, RESET_GATHER_MS + FOCUSED_DELETE_SHAKE_MS + POOF_VISIBLE_MS);
+
+    focusedDeleteTimeoutsRef.current = [shakeTimeout, poofTimeout, hidePoofTimeout];
+  };
+
+  const confirmDestructiveAction = () => {
+    if (confirmationModalIntent === 'deleteFocused') {
+      beginFocusedDeleteSequence();
+      return;
+    }
+
+    beginResetDeleteSequence();
+  };
+
+  const finishNamingPlush = (shouldRelease = namingReleasesOnSubmit) => {
+    if (!namingPlushId) {
+      return;
+    }
+
+    const fallbackName = `plush ${plushes.findIndex((plush) => plush.id === namingPlushId) + 1}`;
+    const nextName = namingDraft.trim() || fallbackName;
+
+    setPlushes((currentPlushes) =>
+      currentPlushes.map((plush) =>
+        plush.id === namingPlushId ? { ...plush, name: nextName } : plush
+      )
+    );
+    setNamingPlushId(null);
+    setNamingReleasesOnSubmit(false);
+    setNamingDraft('');
+    Keyboard.dismiss();
+
+    if (shouldRelease) {
+      setFocusedPlushId(null);
+    }
+  };
+
+  const handlePlushesPrepared = () => {
+    setIsPreparingPlush(false);
+
+    if (!pendingNamingPlushId) {
+      return;
+    }
+
+    const nextNamingPlushId = pendingNamingPlushId;
+
+    setTimeout(() => {
+      setIsPetting(false);
+      setNamingDraft('');
+      setNamingReleasesOnSubmit(true);
+      setNamingPlushId(nextNamingPlushId);
+      setFocusedPlushId(nextNamingPlushId);
+      setPendingNamingPlushId(null);
+    }, 180);
   };
 
   const handlePlayAreaLayout = (event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
+
+    playAreaInnerRef.current?.measureInWindow((_, y) => {
+      setPlayAreaWindowY(y);
+    });
 
     setPlayAreaSize((currentSize) => {
       if (currentSize.width === width && currentSize.height === height) {
@@ -697,10 +935,21 @@ export default function HomeScreen() {
     inputRange: [0, 0.55, 1],
     outputRange: [8, 8, 0],
   });
+  const focusedNameTagText = focusedPlush?.name || 'Give them a name!';
+  const confirmationModalText =
+    confirmationModalIntent === 'deleteFocused'
+      ? 'Are you sure you want to delete this plush?'
+      : 'Are you sure you want to delete all of your current plushies?';
   const petOpacity = petTransition;
   const nameTagOpacity = Animated.multiply(
-    focusModeTransition,
-    petTransition.interpolate({
+    Animated.multiply(
+      focusModeTransition,
+      petTransition.interpolate({
+        inputRange: [0, 1],
+        outputRange: [1, 0],
+      })
+    ),
+    focusedDeleteTransition.interpolate({
       inputRange: [0, 1],
       outputRange: [1, 0],
     })
@@ -714,7 +963,10 @@ export default function HomeScreen() {
     <Animated.View style={[styles.screen, { backgroundColor: screenBackgroundColor, paddingTop: insets.top + 16 }]}>
       <StatusBar style={isPartyMode || isPartyVisualVisible ? 'light' : 'dark'} />
       <View style={[styles.playAreaOuter, isPartyMode && styles.playAreaOuterParty]}>
-        <View style={styles.playAreaInner} onLayout={handlePlayAreaLayout}>
+        <View
+          ref={playAreaInnerRef}
+          style={[styles.playAreaInner, isPartyVisualVisible && styles.playAreaInnerParty]}
+          onLayout={handlePlayAreaLayout}>
         {isPartyVisualVisible ? (
           <Animated.View pointerEvents="none" style={[styles.partyBackdrop, { opacity: partyTransition }]}>
             <Animated.View
@@ -728,7 +980,7 @@ export default function HomeScreen() {
                 },
               ]}>
               <LinearGradient
-                colors={['#1A1A1A', '#262626', '#3A3A3A', '#232323', '#1A1A1A']}
+                colors={['#0D0D0D', '#171717', '#252525', '#191919', '#0D0D0D']}
                 end={{ x: 1, y: 1 }}
                 locations={[0, 0.28, 0.52, 0.76, 1]}
                 start={{ x: 0, y: 0 }}
@@ -736,7 +988,7 @@ export default function HomeScreen() {
               />
             </Animated.View>
             <LinearGradient
-              colors={['rgba(0, 0, 0, 0.18)', 'rgba(0, 0, 0, 0)', 'rgba(0, 0, 0, 0.34)']}
+              colors={['rgba(0, 0, 0, 0.32)', 'rgba(0, 0, 0, 0.08)', 'rgba(0, 0, 0, 0.42)']}
               locations={[0, 0.46, 1]}
               style={styles.partyVignette}
             />
@@ -747,33 +999,49 @@ export default function HomeScreen() {
           <View style={styles.previewFrame}>
             <PlushMeshViewer
               backgroundColor="#FCF1E9"
+              dimPlushes={isWorking || Boolean(pendingNamingPlushId)}
+              focusedLerp={isNamingFocusedPlush ? 0.055 : undefined}
               focusedPlushId={focusedPlushId}
+              focusedShakeKey={focusedDeleteShakeKey}
+              gatherKey={globalGatherKey}
+              globalShakeKey={globalDeleteShakeKey}
+              focusedScreenY={focusedScreenY}
               onFocusedPlushLayout={(layout) => {
                 petPosition.setValue({
                   x: layout.petX - PETTING_OVERLAY_WIDTH / 2,
                   y: layout.petY - PETTING_OVERLAY_TOP_OFFSET,
+                });
+                poofPosition.setValue({
+                  x: layout.poofX - POOF_OVERLAY_SIZE / 2,
+                  y: layout.poofY - POOF_OVERLAY_SIZE / 2 + POOF_VERTICAL_CENTER_OFFSET,
                 });
                 nameTagPosition.setValue({
                   x: layout.x - playAreaSize.width / 2,
                   y: layout.y - nameTagSize.height - 40,
                 });
               }}
-              onEmptyPress={() => setFocusedPlushId(null)}
-              onPlushDragChange={setIsHoldingPlush}
-              onPlushDrop={handlePlushDrop}
+              onEmptyPress={() => {
+                if (isNamingFocusedPlush) {
+                  finishNamingPlush(false);
+                  return;
+                }
+
+                setFocusedPlushId(null);
+              }}
               onPlushPress={focusPlush}
               partyPulseKey={partyPulseKey}
+              pendingFocusPlushId={pendingNamingPlushId}
               petPulseKey={petPulseKey}
               plushes={plushes}
               physicsEnabled={!focusedPlushId}
-              onPlushesPrepared={() => setIsPreparingPlush(false)}
+              onPlushesPrepared={handlePlushesPrepared}
             />
           </View>
         ) : null}
 
         {focusedPlush ? (
           <Animated.View
-            pointerEvents="none"
+            pointerEvents="auto"
             onLayout={(event) => {
               const { width, height } = event.nativeEvent.layout;
 
@@ -795,7 +1063,49 @@ export default function HomeScreen() {
                 ],
               },
             ]}>
-            <Text style={[styles.nameTagText, { fontFamily: dockLabelFontFamily }]}>{focusedPlush.name}</Text>
+            {isNamingFocusedPlush ? (
+              <>
+                <Text
+                  pointerEvents="none"
+                  onLayout={(event) => {
+                    const nextWidth = event.nativeEvent.layout.width;
+
+                    setNamingTextWidth((currentWidth) =>
+                      Math.abs(currentWidth - nextWidth) < 0.5 ? currentWidth : nextWidth
+                    );
+                  }}
+                  style={[styles.nameTagMeasureText, { fontFamily: dockLabelFontFamily }]}>
+                  {namingInputText}
+                </Text>
+                <TextInput
+                  ref={namingInputRef}
+                  autoCapitalize="words"
+                  autoCorrect={false}
+                  blurOnSubmit
+                  numberOfLines={1}
+                  onChangeText={setNamingDraft}
+                  onSubmitEditing={() => finishNamingPlush()}
+                  placeholder="Give them a name!"
+                  placeholderTextColor="rgba(200, 116, 29, 0.3)"
+                  returnKeyType="done"
+                  selectionColor="#C8741D"
+                  style={[
+                    styles.nameTagInput,
+                    { fontFamily: dockLabelFontFamily, maxWidth: NAME_TAG_TEXT_MAX_WIDTH, width: namingInputWidth },
+                  ]}
+                  value={namingDraft}
+                />
+              </>
+            ) : (
+              <Pressable accessibilityRole="button" onPress={editFocusedPlushName}>
+                <Text
+                  ellipsizeMode="tail"
+                  numberOfLines={1}
+                  style={[styles.nameTagText, { fontFamily: dockLabelFontFamily }]}>
+                  {focusedNameTagText}
+                </Text>
+              </Pressable>
+            )}
           </Animated.View>
         ) : null}
 
@@ -818,6 +1128,22 @@ export default function HomeScreen() {
           </Animated.View>
         ) : null}
 
+        {isPoofVisible ? (
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.poofOverlay,
+              {
+                transform: [
+                  { translateX: poofPosition.x },
+                  { translateY: poofPosition.y },
+                ],
+              },
+            ]}>
+            <Image source={poofGif} style={styles.poofImage} />
+          </Animated.View>
+        ) : null}
+
         {isPartyVisualVisible ? (
           <>
             <Animated.View pointerEvents="none" style={[styles.sparklesOverlay, { opacity: partyTransition }]}>
@@ -829,15 +1155,6 @@ export default function HomeScreen() {
               <Image source={discoGif} style={styles.discoImage} />
             </Animated.View>
           </>
-        ) : null}
-
-        {isHoldingPlush ? (
-          <View
-            ref={trashButtonRef}
-            onLayout={measureTrashButton}
-            style={[styles.trashButton, { top: 20, right: 20 }]}>
-            <Ionicons name="trash-outline" size={29} color="#FFFFFF" />
-          </View>
         ) : null}
 
         {playAreaSize.width > 0 && playAreaSize.height > 0 && !isPartyMode ? (
@@ -860,11 +1177,14 @@ export default function HomeScreen() {
           </View>
         ) : null}
 
-        {isWorking ? (
+        {isLoadingVisualVisible ? (
           <Animated.View pointerEvents="none" style={[styles.loadingState, { opacity: loadingTransition }]}>
             <Image source={scribblingGif} style={styles.loadingScribble} />
             <View style={styles.loadingNameTag}>
-              <Text style={[styles.loadingText, { fontFamily: dockLabelFontFamily }]}>Stuffing...</Text>
+              <View style={styles.loadingNameTagInner}>
+                <DashedInnerFrame border="#FFB6BD" radius={12} />
+                <Text style={[styles.loadingText, { fontFamily: dockLabelFontFamily }]}>Stuffing...</Text>
+              </View>
             </View>
           </Animated.View>
         ) : null}
@@ -916,7 +1236,7 @@ export default function HomeScreen() {
               fontFamily={dockLabelFontFamily}
               icon={(color) => <ResetIcon color={color} />}
               label="Reset"
-              onPress={resetPlushes}
+              onPress={showResetModal}
               tone={dockTones.reset}
             />
           </Animated.View>
@@ -963,13 +1283,56 @@ export default function HomeScreen() {
                   fontFamily={dockLabelFontFamily}
                   icon={(color) => <DeleteIcon color={color} />}
                   label="Delete"
-                  onPress={deleteFocusedPlush}
+                  onPress={showFocusedDeleteModal}
                   tone={FOCUS_DOCK_TONES.delete}
                 />
               </View>
           </Animated.View>
         </View>
       </View>
+
+      {isConfirmationModalMounted ? (
+        <Animated.View style={[styles.resetModalOverlay, { opacity: resetModalTransition }]}>
+          <Pressable
+            accessibilityLabel="Close reset confirmation"
+            accessibilityRole="button"
+            onPress={hideConfirmationModal}
+            style={StyleSheet.absoluteFill}
+          />
+
+          <View style={styles.resetModalOuter}>
+            <View style={styles.resetModalCard}>
+              <Text style={[styles.resetModalTitle, { fontFamily: dockLabelFontFamily }]}>
+                {confirmationModalText}
+              </Text>
+
+              <View style={styles.resetModalActions}>
+                <View style={styles.resetModalButtonFrame}>
+                  <ActionButton
+                    accessibilityLabel="Cancel reset"
+                    fontFamily={dockLabelFontFamily}
+                    icon={(color) => <BackIcon color={color} />}
+                    label="Back"
+                    onPress={hideConfirmationModal}
+                    tone={FOCUS_DOCK_TONES.back}
+                  />
+                </View>
+
+                <View style={styles.resetModalButtonFrame}>
+                  <ActionButton
+                    accessibilityLabel="Confirm reset"
+                    fontFamily={dockLabelFontFamily}
+                    icon={(color) => <DeleteIcon color={color} />}
+                    label="Delete"
+                    onPress={confirmDestructiveAction}
+                    tone={FOCUS_DOCK_TONES.delete}
+                  />
+                </View>
+              </View>
+            </View>
+          </View>
+        </Animated.View>
+      ) : null}
     </Animated.View>
   );
 }
@@ -992,6 +1355,7 @@ const styles = StyleSheet.create({
     elevation: 7,
   },
   playAreaOuterParty: {
+    backgroundColor: '#0D0D0D',
     padding: 0,
   },
   playAreaInner: {
@@ -999,6 +1363,9 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     borderRadius: 22,
     backgroundColor: '#FCF1E9',
+  },
+  playAreaInnerParty: {
+    backgroundColor: '#0D0D0D',
   },
   previewFrame: {
     width: '100%',
@@ -1012,7 +1379,7 @@ const styles = StyleSheet.create({
   partyBackdrop: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 0,
-    backgroundColor: '#1A1A1A',
+    backgroundColor: '#0D0D0D',
   },
   partyGradientWash: {
     position: 'absolute',
@@ -1020,7 +1387,7 @@ const styles = StyleSheet.create({
     right: -260,
     bottom: -260,
     left: -260,
-    opacity: 0.52,
+    opacity: 0.5,
   },
   partyGradient: {
     flex: 1,
@@ -1054,11 +1421,14 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 0,
     zIndex: 6,
+    alignItems: 'center',
     alignSelf: 'center',
-    borderRadius: 14,
+    justifyContent: 'center',
+    borderRadius: 12,
     backgroundColor: '#FBF5EF',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    maxWidth: NAME_TAG_MAX_WIDTH,
+    paddingHorizontal: NAME_TAG_HORIZONTAL_PADDING,
+    paddingVertical: 8,
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.16,
@@ -1069,8 +1439,34 @@ const styles = StyleSheet.create({
     color: '#C8741D',
     fontSize: 14,
     fontWeight: '600',
+    includeFontPadding: false,
     letterSpacing: 0,
-    lineHeight: 17,
+    lineHeight: 22,
+    maxWidth: NAME_TAG_TEXT_MAX_WIDTH,
+  },
+  nameTagMeasureText: {
+    position: 'absolute',
+    color: 'transparent',
+    fontSize: 14,
+    fontWeight: '600',
+    includeFontPadding: false,
+    letterSpacing: 0,
+    lineHeight: 22,
+    opacity: 0,
+  },
+  nameTagInput: {
+    color: '#C8741D',
+    fontSize: 14,
+    fontWeight: '600',
+    includeFontPadding: false,
+    letterSpacing: 0,
+    margin: 0,
+    minHeight: 18,
+    paddingBottom: 0,
+    paddingLeft: 0,
+    paddingRight: 0,
+    paddingTop: 0,
+    textAlign: 'center',
   },
   pettingOverlay: {
     position: 'absolute',
@@ -1085,15 +1481,18 @@ const styles = StyleSheet.create({
     height: '100%',
     resizeMode: 'contain',
   },
-  trashButton: {
+  poofOverlay: {
     position: 'absolute',
-    zIndex: 6,
-    width: 70,
-    height: 70,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 35,
-    backgroundColor: '#FF4650',
+    zIndex: 8,
+    left: 0,
+    top: 0,
+    width: POOF_OVERLAY_SIZE,
+    height: POOF_OVERLAY_SIZE,
+  },
+  poofImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'contain',
   },
   loadingState: {
     position: 'absolute',
@@ -1110,26 +1509,81 @@ const styles = StyleSheet.create({
     width: 240,
     height: 240,
     resizeMode: 'contain',
+    transform: [{ translateX: -12 }],
   },
   loadingNameTag: {
     alignItems: 'center',
     alignSelf: 'center',
-    borderRadius: 14,
+    borderRadius: 12,
     backgroundColor: '#FBF5EF',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    padding: 4,
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.16,
     shadowRadius: 16,
     elevation: 7,
   },
+  loadingNameTagInner: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    backgroundColor: '#FFE5E6',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
   loadingText: {
-    color: '#353535',
+    color: '#F47F86',
     fontSize: 14,
     fontWeight: '600',
     letterSpacing: 0,
-    lineHeight: 17,
+    lineHeight: 22,
+  },
+  resetModalOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+    paddingHorizontal: 20,
+  },
+  resetModalOuter: {
+    width: 288,
+    borderRadius: 32,
+    backgroundColor: '#FBF5EF',
+    padding: 4,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.16,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  resetModalCard: {
+    alignItems: 'center',
+    gap: 20,
+    borderWidth: 2,
+    borderColor: '#D9A4DC',
+    borderRadius: 28,
+    borderStyle: 'dashed',
+    backgroundColor: '#FBF5EF',
+    paddingHorizontal: 28,
+    paddingVertical: 28,
+  },
+  resetModalTitle: {
+    color: '#B22683',
+    fontSize: 15,
+    fontWeight: '600',
+    letterSpacing: 0,
+    lineHeight: 19,
+    textAlign: 'center',
+  },
+  resetModalActions: {
+    width: '100%',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  resetModalButtonFrame: {
+    flex: 1,
+    height: 69,
   },
   bottomBar: {
     paddingLeft: 20,
@@ -1169,8 +1623,8 @@ const styles = StyleSheet.create({
     elevation: 7,
   },
   actionButtonInner: {
-    width: 74,
-    height: 61,
+    width: '100%',
+    height: '100%',
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 18,
@@ -1188,6 +1642,6 @@ const styles = StyleSheet.create({
     transform: [{ scale: 0.97 }],
   },
   actionButtonDisabled: {
-    opacity: 0.42,
+    opacity: 0.3,
   },
 });

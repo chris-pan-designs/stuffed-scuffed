@@ -11,8 +11,15 @@ import type { DetectedOutline } from '@/lib/outlineDetection';
 
 type PlushMeshViewerProps = {
   backgroundColor?: string;
+  dimPlushes?: boolean;
+  focusedLerp?: number;
   focusedPlushId?: string | null;
-  onFocusedPlushLayout?: (layout: { petX: number; petY: number; x: number; y: number }) => void;
+  focusedShakeKey?: number;
+  gatherKey?: number;
+  globalShakeKey?: number;
+  focusedScreenY?: number;
+  pendingFocusPlushId?: string | null;
+  onFocusedPlushLayout?: (layout: { petX: number; petY: number; poofX: number; poofY: number; x: number; y: number }) => void;
   onEmptyPress?: () => void;
   onPlushDragChange?: (isDragging: boolean) => void;
   onPlushDrop?: (plushId: string, point: { x: number; y: number }) => void;
@@ -176,11 +183,22 @@ const FOCUS_FLOAT_AMPLITUDE = 0.08;
 const FOCUS_FLOAT_PERIOD_MS = 2800;
 const FOCUS_LERP = 0.09;
 const FOCUS_FRONT_FACE_DURATION_MS = 520;
+const FOCUS_IDLE_Y_ROTATION_SPEED = 0.00022;
 const FOCUS_ROTATION_LERP = 0.06;
+const FOCUS_RELEASE_ROTATION_VELOCITY = 8.2;
+const FOCUS_ROTATION_DAMPING = 0.978;
+const FOCUS_IDLE_ROTATION_THRESHOLD = 0.035;
+const FOCUS_DELETE_SHAKE_DURATION_MS = 1420;
+const FOCUS_DELETE_SHAKE_AMPLITUDE = 0.045;
+const GLOBAL_GATHER_DURATION_MS = 900;
+const GLOBAL_GATHER_SPACING = PLUSH_TARGET_SIZE * 0.68;
 const FOCUS_OTHER_OPACITY = 0;
 const PET_PULSE_DURATION_MS = 1200;
 const PET_PULSE_PERIOD_MS = 387;
 const PET_SQUASH_AMOUNT = 0.16;
+const PLUSH_OPACITY_LERP = 0.14;
+const PLUSH_DIM_OPACITY_LERP = 0.32;
+const PLUSH_OPACITY_SNAP_THRESHOLD = 0.015;
 const TAP_MOVE_THRESHOLD = 10;
 const SHADOW_BASE_OPACITY = 0.14;
 const SHADOW_MIN_OPACITY = 0.025;
@@ -772,7 +790,7 @@ const applyPartyPulse = (runtimes: PlushRuntime[], pulseKey: number) => {
   });
 };
 
-const setRuntimeOpacity = (runtime: PlushRuntime, opacity: number) => {
+const setRuntimeOpacity = (runtime: PlushRuntime, opacity: number, lerp = PLUSH_OPACITY_LERP) => {
   runtime.mesh.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) {
       return;
@@ -784,13 +802,20 @@ const setRuntimeOpacity = (runtime: PlushRuntime, opacity: number) => {
       const meshMaterial = material as THREE.MeshBasicMaterial;
 
       meshMaterial.transparent = true;
-      meshMaterial.opacity += (opacity - meshMaterial.opacity) * 0.14;
+      meshMaterial.opacity += (opacity - meshMaterial.opacity) * lerp;
+      if (opacity === 0 && meshMaterial.opacity < PLUSH_OPACITY_SNAP_THRESHOLD) {
+        meshMaterial.opacity = 0;
+      }
       meshMaterial.needsUpdate = true;
     });
   });
 
-  runtime.shadow.material.opacity +=
-    (opacity <= FOCUS_OTHER_OPACITY ? 0 : SHADOW_BASE_OPACITY - runtime.shadow.material.opacity) * 0.14;
+  const targetShadowOpacity = opacity <= FOCUS_OTHER_OPACITY ? 0 : runtime.shadow.material.opacity;
+  runtime.shadow.material.opacity += (targetShadowOpacity - runtime.shadow.material.opacity) * lerp;
+  if (targetShadowOpacity === 0 && runtime.shadow.material.opacity < PLUSH_OPACITY_SNAP_THRESHOLD) {
+    runtime.shadow.material.opacity = 0;
+    runtime.shadow.visible = false;
+  }
 };
 
 const getRotatedHalfExtents = (physics: PhysicsState, rotationZ: number) => {
@@ -861,6 +886,31 @@ const getProjectedTopVisibleAnchor = (mesh: THREE.Group) => {
   }
 
   return new THREE.Vector2(weightTotal > 0 ? weightedX / weightTotal : 0, topY);
+};
+
+const getProjectedVisibleCenterAnchor = (mesh: THREE.Group) => {
+  const hitMask = mesh.userData.hitMask as PlushHitMask | undefined;
+  const points = hitMask?.collisionPoints;
+
+  if (!points || points.length === 0) {
+    return new THREE.Vector2(0, 0);
+  }
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+
+  for (const point of points) {
+    const projectedPoint = point.clone().applyQuaternion(mesh.quaternion);
+
+    minX = Math.min(minX, projectedPoint.x);
+    maxX = Math.max(maxX, projectedPoint.x);
+    minY = Math.min(minY, projectedPoint.y);
+    maxY = Math.max(maxY, projectedPoint.y);
+  }
+
+  return new THREE.Vector2((minX + maxX) / 2, (minY + maxY) / 2);
 };
 
 const getVisualDepthForIndex = (index: number, totalCount: number) =>
@@ -937,9 +987,13 @@ const applyFocusFrame = (
   focusedPlushId: string,
   state: SceneState,
   frameTime: number,
+  deltaMs: number,
+  focusLerp: number,
+  focusedScreenY: number,
   focusStartedAt: number,
   layout: { width: number; height: number },
-  onFocusedPlushLayout?: (layout: { petX: number; petY: number; x: number; y: number }) => void,
+  onFocusedPlushLayout?: (layout: { petX: number; petY: number; poofX: number; poofY: number; x: number; y: number }) => void,
+  focusedShakeStartedAt?: number | null,
   petStartedAt?: number | null
 ) => {
   const focusedRuntime = runtimes.find((runtime) => runtime.id === focusedPlushId);
@@ -960,18 +1014,32 @@ const applyFocusFrame = (
 
     const elapsedFocusTime = Math.max(0, frameTime - focusStartedAt);
     const floatY = -Math.sin((elapsedFocusTime / FOCUS_FLOAT_PERIOD_MS) * Math.PI) * FOCUS_FLOAT_AMPLITUDE;
-    const targetPosition = new THREE.Vector3(0, -state.viewportWorldHeight * 0.04 + floatY, runtime.depthZ);
+    const targetWorldY = (0.5 - focusedScreenY) * state.viewportWorldHeight;
+    const targetPosition = new THREE.Vector3(0, targetWorldY + floatY, runtime.depthZ);
 
     runtime.physics.dragging = false;
     runtime.physics.velocity.set(0, 0, 0);
-    runtime.physics.angularVelocity.multiplyScalar(0.86);
-    runtime.physics.position.lerp(targetPosition, FOCUS_LERP);
+    runtime.physics.position.lerp(targetPosition, focusLerp);
     if (elapsedFocusTime < FOCUS_FRONT_FACE_DURATION_MS) {
+      runtime.physics.angularVelocity.multiplyScalar(0.92);
       runtime.mesh.rotation.x += (DEFAULT_ROTATION.x - runtime.mesh.rotation.x) * FOCUS_ROTATION_LERP;
       runtime.mesh.rotation.y += (DEFAULT_ROTATION.y - runtime.mesh.rotation.y) * FOCUS_ROTATION_LERP;
       runtime.mesh.rotation.z += (DEFAULT_ROTATION.z - runtime.mesh.rotation.z) * FOCUS_ROTATION_LERP;
+    } else if (runtime.physics.angularVelocity.length() > FOCUS_IDLE_ROTATION_THRESHOLD) {
+      applyAngularVelocity(runtime.mesh, runtime.physics.angularVelocity, deltaMs / 1000);
+      runtime.physics.angularVelocity.multiplyScalar(FOCUS_ROTATION_DAMPING);
+    } else {
+      runtime.physics.angularVelocity.set(0, 0, 0);
+      runtime.mesh.rotation.y += FOCUS_IDLE_Y_ROTATION_SPEED * deltaMs;
     }
     runtime.mesh.position.copy(runtime.physics.position);
+
+    if (focusedShakeStartedAt !== null && focusedShakeStartedAt !== undefined) {
+      const elapsedShakeTime = frameTime - focusedShakeStartedAt;
+
+      runtime.mesh.position.x += getDeleteShakeOffset(elapsedShakeTime);
+    }
+
     resetPlushSoftness(runtime.mesh, runtime.softness);
 
     if (petStartedAt !== null && petStartedAt !== undefined) {
@@ -993,19 +1061,83 @@ const applyFocusFrame = (
 
     if (onFocusedPlushLayout && state.viewportWorldWidth > 0 && state.viewportWorldHeight > 0) {
       const topVisibleAnchor = getProjectedTopVisibleAnchor(focusedRuntime.mesh);
+      const visibleCenterAnchor = getProjectedVisibleCenterAnchor(focusedRuntime.mesh);
       const tagAnchorWorldY =
         focusedRuntime.physics.position.y + focusedRuntime.physics.halfHeight * 0.84;
       const petAnchorWorldX = focusedRuntime.physics.position.x + topVisibleAnchor.x;
       const petAnchorWorldY = focusedRuntime.physics.position.y + topVisibleAnchor.y;
+      const poofAnchorWorldX = focusedRuntime.physics.position.x + visibleCenterAnchor.x;
+      const poofAnchorWorldY = focusedRuntime.physics.position.y + visibleCenterAnchor.y;
 
       onFocusedPlushLayout({
         petX: (petAnchorWorldX / state.viewportWorldWidth + 0.5) * layout.width,
         petY: (0.5 - petAnchorWorldY / state.viewportWorldHeight) * layout.height,
+        poofX: (poofAnchorWorldX / state.viewportWorldWidth + 0.5) * layout.width,
+        poofY: (0.5 - poofAnchorWorldY / state.viewportWorldHeight) * layout.height,
         x: (focusedRuntime.physics.position.x / state.viewportWorldWidth + 0.5) * layout.width,
         y: (0.5 - tagAnchorWorldY / state.viewportWorldHeight) * layout.height,
       });
     }
   }
+};
+
+const getDeleteShakeOffset = (elapsedShakeTime: number, phaseOffset = 0) => {
+  if (elapsedShakeTime < 0 || elapsedShakeTime > FOCUS_DELETE_SHAKE_DURATION_MS) {
+    return 0;
+  }
+
+  const progress = elapsedShakeTime / FOCUS_DELETE_SHAKE_DURATION_MS;
+  const ramp = progress * progress * progress;
+  const frequency = 0.012 + progress * progress * 0.07;
+
+  return Math.sin(elapsedShakeTime * frequency + phaseOffset) * FOCUS_DELETE_SHAKE_AMPLITUDE * ramp;
+};
+
+const getGatherTargetPosition = (index: number, count: number, depthZ: number) => {
+  const columns = Math.ceil(Math.sqrt(count));
+  const rows = Math.ceil(count / columns);
+  const column = index % columns;
+  const row = Math.floor(index / columns);
+  const x = (column - (columns - 1) / 2) * GLOBAL_GATHER_SPACING;
+  const y = ((rows - 1) / 2 - row) * GLOBAL_GATHER_SPACING * 0.72;
+
+  return new THREE.Vector3(x, y, depthZ);
+};
+
+const applyGlobalGatherFrame = (
+  runtimes: PlushRuntime[],
+  state: SceneState,
+  frameTime: number,
+  gatherStartedAt: number,
+  gatherStartPositions: Map<string, THREE.Vector3>,
+  globalShakeStartedAt: number | null
+) => {
+  const progress = THREE.MathUtils.clamp((frameTime - gatherStartedAt) / GLOBAL_GATHER_DURATION_MS, 0, 1);
+  const easedProgress = 1 - Math.pow(1 - progress, 3);
+
+  runtimes.forEach((runtime, index) => {
+    const startPosition = gatherStartPositions.get(runtime.id) ?? runtime.physics.position;
+    const targetPosition = getGatherTargetPosition(index, runtimes.length, runtime.depthZ);
+
+    runtime.physics.dragging = false;
+    runtime.physics.lastFrameTime = null;
+    runtime.physics.velocity.set(0, 0, 0);
+    runtime.physics.angularVelocity.multiplyScalar(0.96);
+    runtime.physics.position.lerpVectors(startPosition, targetPosition, easedProgress);
+    runtime.physics.position.z = runtime.depthZ;
+    runtime.mesh.position.copy(runtime.physics.position);
+
+    if (globalShakeStartedAt !== null) {
+      runtime.mesh.position.x += getDeleteShakeOffset(
+        frameTime - globalShakeStartedAt,
+        runtime.depthZ * 80 + runtime.physics.radius
+      );
+    }
+
+    updatePlushShadow(runtime, state, true);
+    resetPlushSoftness(runtime.mesh, runtime.softness);
+    setRuntimeOpacity(runtime, 1);
+  });
 };
 
 const createPhysicsState = (): PhysicsState => ({
@@ -1725,7 +1857,13 @@ const isTouchOnPlush = (
 
 export function PlushMeshViewer({
   backgroundColor = '#FFFFFF',
+  dimPlushes = false,
+  focusedLerp = FOCUS_LERP,
   focusedPlushId = null,
+  focusedShakeKey = 0,
+  gatherKey = 0,
+  globalShakeKey = 0,
+  focusedScreenY = 0.54,
   onFocusedPlushLayout,
   onEmptyPress,
   onPlushDragChange,
@@ -1733,6 +1871,7 @@ export function PlushMeshViewer({
   onPlushPress,
   onPlushesPrepared,
   partyPulseKey = 0,
+  pendingFocusPlushId = null,
   petPulseKey = 0,
   plushes,
   physicsEnabled = false,
@@ -1752,10 +1891,25 @@ export function PlushMeshViewer({
   const gravityRef = useRef(new THREE.Vector3(0, -PHYSICS_GRAVITY, 0));
   const previousAccelerationRef = useRef(new THREE.Vector3());
   const lastShakeTimeRef = useRef(0);
+  const dimPlushesRef = useRef(dimPlushes);
   const physicsEnabledRef = useRef(physicsEnabled);
   const focusedPlushIdRef = useRef<string | null>(focusedPlushId);
+  const pendingFocusPlushIdRef = useRef<string | null>(pendingFocusPlushId);
+  const focusedLerpRef = useRef(focusedLerp);
+  const focusedScreenYRef = useRef(focusedScreenY);
   const onFocusedPlushLayoutRef = useRef(onFocusedPlushLayout);
+  const focusLastFrameTimeRef = useRef<number | null>(null);
   const focusStartedAtRef = useRef<number | null>(null);
+  const focusedShakeKeyRef = useRef(focusedShakeKey);
+  const focusedShakeStartedAtRef = useRef<number | null>(null);
+  const isFocusedShakePendingRef = useRef(false);
+  const gatherKeyRef = useRef(gatherKey);
+  const gatherStartedAtRef = useRef<number | null>(null);
+  const isGatherPendingRef = useRef(false);
+  const gatherStartPositionsRef = useRef<Map<string, THREE.Vector3>>(new Map());
+  const globalShakeKeyRef = useRef(globalShakeKey);
+  const globalShakeStartedAtRef = useRef<number | null>(null);
+  const isGlobalShakePendingRef = useRef(false);
   const isExitingFocusRef = useRef(false);
   const isPetPulsePendingRef = useRef(false);
   const petPulseKeyRef = useRef(petPulseKey);
@@ -1777,8 +1931,54 @@ export function PlushMeshViewer({
   }, [physicsEnabled]);
 
   useEffect(() => {
+    dimPlushesRef.current = dimPlushes;
+  }, [dimPlushes]);
+
+  useEffect(() => {
+    focusedScreenYRef.current = focusedScreenY;
+  }, [focusedScreenY]);
+
+  useEffect(() => {
+    pendingFocusPlushIdRef.current = pendingFocusPlushId;
+  }, [pendingFocusPlushId]);
+
+  useEffect(() => {
+    focusedLerpRef.current = focusedLerp;
+  }, [focusedLerp]);
+
+  useEffect(() => {
     onFocusedPlushLayoutRef.current = onFocusedPlushLayout;
   }, [onFocusedPlushLayout]);
+
+  useEffect(() => {
+    if (focusedShakeKey > focusedShakeKeyRef.current) {
+      focusedShakeStartedAtRef.current = null;
+      isFocusedShakePendingRef.current = true;
+    }
+
+    focusedShakeKeyRef.current = focusedShakeKey;
+  }, [focusedShakeKey]);
+
+  useEffect(() => {
+    if (globalShakeKey > globalShakeKeyRef.current) {
+      globalShakeStartedAtRef.current = null;
+      isGlobalShakePendingRef.current = true;
+    }
+
+    globalShakeKeyRef.current = globalShakeKey;
+  }, [globalShakeKey]);
+
+  useEffect(() => {
+    if (gatherKey > gatherKeyRef.current) {
+      gatherStartedAtRef.current = null;
+      isGatherPendingRef.current = true;
+      gatherStartPositionsRef.current = new Map(
+        runtimesRef.current.map((runtime) => [runtime.id, runtime.physics.position.clone()])
+      );
+    }
+
+    gatherKeyRef.current = gatherKey;
+  }, [gatherKey]);
 
   useEffect(() => {
     if (petPulseKey > petPulseKeyRef.current) {
@@ -1795,7 +1995,10 @@ export function PlushMeshViewer({
     }
 
     focusedPlushIdRef.current = focusedPlushId;
+    focusLastFrameTimeRef.current = null;
     focusStartedAtRef.current = null;
+    focusedShakeStartedAtRef.current = null;
+    isFocusedShakePendingRef.current = false;
     petStartedAtRef.current = null;
     isPetPulsePendingRef.current = false;
     activeRuntimeRef.current = null;
@@ -1864,6 +2067,7 @@ export function PlushMeshViewer({
                 y: activeMesh.rotation.y,
                 z: activeMesh.rotation.z,
               };
+              activeRuntimeRef.current?.physics.angularVelocity.set(0, 0, 0);
             }
 
             return;
@@ -1961,6 +2165,15 @@ export function PlushMeshViewer({
           const focusedPlushId = focusedPlushIdRef.current;
 
           if (focusedPlushId) {
+            if (activeRuntime?.id === focusedPlushId && movedDistance >= TAP_MOVE_THRESHOLD) {
+              activeRuntime.physics.angularVelocity.set(
+                gesture.vy * FOCUS_RELEASE_ROTATION_VELOCITY,
+                gesture.vx * FOCUS_RELEASE_ROTATION_VELOCITY,
+                0
+              );
+              clampAngularVelocity(activeRuntime.physics.angularVelocity);
+            }
+
             if (gestureStartedOnEmptyRef.current && movedDistance < TAP_MOVE_THRESHOLD) {
               onEmptyPress?.();
             }
@@ -2104,16 +2317,34 @@ export function PlushMeshViewer({
     runtimesRef.current = runtimesRef.current.filter((runtime) => nextIds.has(runtime.id));
     const baseRuntimeCount = runtimesRef.current.length;
 
+    if (runtimesRef.current.length === 0 && plushes.length === 0) {
+      gatherStartedAtRef.current = null;
+      isGatherPendingRef.current = false;
+      gatherStartPositionsRef.current.clear();
+      globalShakeStartedAtRef.current = null;
+      isGlobalShakePendingRef.current = false;
+    }
+
     newPlushes.forEach((plush, index) => {
-      runtimesRef.current.push(
-        createPlushRuntime(
-          plush,
-          stateRef.current,
-          baseRuntimeCount + index,
-          plushes.length,
-          physicsEnabledRef.current
-        )
+      const runtime = createPlushRuntime(
+        plush,
+        stateRef.current,
+        baseRuntimeCount + index,
+        plushes.length,
+        physicsEnabledRef.current
       );
+
+      if (plush.id === pendingFocusPlushIdRef.current) {
+        const startHalfExtents = getProjectedHalfExtents(runtime.mesh, runtime.physics);
+        const startY = Math.max(0, stateRef.current.viewportWorldHeight / 2 - startHalfExtents.y);
+
+        runtime.physics.position.set(0, startY, runtime.depthZ);
+        runtime.physics.velocity.set(0, -0.35, 0);
+        runtime.mesh.position.copy(runtime.physics.position);
+        updatePlushShadow(runtime, stateRef.current, physicsEnabledRef.current);
+      }
+
+      runtimesRef.current.push(runtime);
     });
 
     runtimesRef.current.forEach((runtime, index) => {
@@ -2157,10 +2388,28 @@ export function PlushMeshViewer({
       stateRef.current.animationFrame = requestAnimationFrame(render);
       const focusedPlushId = focusedPlushIdRef.current;
 
+      if (isGlobalShakePendingRef.current) {
+        globalShakeStartedAtRef.current = frameTime;
+        isGlobalShakePendingRef.current = false;
+      }
+
+      if (isGatherPendingRef.current) {
+        gatherStartedAtRef.current = frameTime;
+        isGatherPendingRef.current = false;
+      }
+
       if (focusedPlushId) {
         if (focusStartedAtRef.current === null) {
           focusStartedAtRef.current = frameTime;
         }
+        if (isFocusedShakePendingRef.current) {
+          focusedShakeStartedAtRef.current = frameTime;
+          isFocusedShakePendingRef.current = false;
+        }
+
+        const focusDeltaMs =
+          focusLastFrameTimeRef.current === null ? 16 : Math.min(33, frameTime - focusLastFrameTimeRef.current);
+        focusLastFrameTimeRef.current = frameTime;
 
         if (isPetPulsePendingRef.current) {
           petStartedAtRef.current = frameTime;
@@ -2172,14 +2421,26 @@ export function PlushMeshViewer({
           focusedPlushId,
           stateRef.current,
           frameTime,
+          focusDeltaMs,
+          focusedLerpRef.current,
+          focusedScreenYRef.current,
           focusStartedAtRef.current,
           layoutRef.current,
           onFocusedPlushLayoutRef.current,
+          focusedShakeStartedAtRef.current,
           petStartedAtRef.current
+        );
+      } else if (gatherStartedAtRef.current !== null) {
+        applyGlobalGatherFrame(
+          runtimesRef.current,
+          stateRef.current,
+          frameTime,
+          gatherStartedAtRef.current,
+          gatherStartPositionsRef.current,
+          globalShakeStartedAtRef.current
         );
       } else if (physicsEnabledRef.current) {
         runtimesRef.current.forEach((runtime) => {
-          setRuntimeOpacity(runtime, 1);
           applyPhysicsFrame(
             runtime.mesh,
             runtime.physics,
@@ -2190,18 +2451,45 @@ export function PlushMeshViewer({
           );
           runtime.physics.position.z = runtime.depthZ;
           runtime.physics.velocity.z = 0;
-          updatePlushShadow(runtime, stateRef.current, true);
+          const isPendingFocusPlush = runtime.id === pendingFocusPlushIdRef.current;
+          const shouldDimRuntime = dimPlushesRef.current && !isPendingFocusPlush;
+          updatePlushShadow(runtime, stateRef.current, !shouldDimRuntime);
+          if (globalShakeStartedAtRef.current !== null) {
+            runtime.mesh.position.x += getDeleteShakeOffset(
+              frameTime - globalShakeStartedAtRef.current,
+              runtime.depthZ * 80 + runtime.physics.radius
+            );
+          }
+          setRuntimeOpacity(runtime, shouldDimRuntime ? 0 : 1, shouldDimRuntime ? PLUSH_DIM_OPACITY_LERP : undefined);
         });
         resolvePlushCollisions(runtimesRef.current);
         settleRestingPlushes(runtimesRef.current, stateRef.current);
         runtimesRef.current.forEach((runtime) => {
           runtime.physics.position.z = runtime.depthZ;
           runtime.mesh.position.copy(runtime.physics.position);
-          updatePlushShadow(runtime, stateRef.current, true);
+          const isPendingFocusPlush = runtime.id === pendingFocusPlushIdRef.current;
+          const shouldDimRuntime = dimPlushesRef.current && !isPendingFocusPlush;
+          updatePlushShadow(runtime, stateRef.current, !shouldDimRuntime);
+          if (globalShakeStartedAtRef.current !== null) {
+            runtime.mesh.position.x += getDeleteShakeOffset(
+              frameTime - globalShakeStartedAtRef.current,
+              runtime.depthZ * 80 + runtime.physics.radius
+            );
+          }
+          setRuntimeOpacity(runtime, shouldDimRuntime ? 0 : 1, shouldDimRuntime ? PLUSH_DIM_OPACITY_LERP : undefined);
         });
       } else {
         runtimesRef.current.forEach((runtime) => {
-          setRuntimeOpacity(runtime, 1);
+          runtime.mesh.position.copy(runtime.physics.position);
+          if (globalShakeStartedAtRef.current !== null) {
+            runtime.mesh.position.x += getDeleteShakeOffset(
+              frameTime - globalShakeStartedAtRef.current,
+              runtime.depthZ * 80 + runtime.physics.radius
+            );
+          }
+          const isPendingFocusPlush = runtime.id === pendingFocusPlushIdRef.current;
+          const shouldDimRuntime = dimPlushesRef.current && !isPendingFocusPlush;
+          setRuntimeOpacity(runtime, shouldDimRuntime ? 0 : 1, shouldDimRuntime ? PLUSH_DIM_OPACITY_LERP : undefined);
           runtime.shadow.visible = false;
         });
       }
