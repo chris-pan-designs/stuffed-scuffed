@@ -97,10 +97,10 @@ const DARK_DOCK_TONES = {
 
 const FOCUS_DOCK_TONES = {
   back: {
-    background: '#F9DDF1',
-    border: '#E8A1DD',
+    background: '#EAFBDF',
+    border: '#B8ECAF',
     outerBackground: '#FBF5EF',
-    primary: '#B22683',
+    primary: '#5BA81E',
   },
   edit: {
     background: '#FFF4E8',
@@ -289,6 +289,7 @@ const NAME_TAG_MAX_WIDTH = 280;
 const NAME_TAG_HORIZONTAL_PADDING = 12;
 const NAME_TAG_TEXT_MAX_WIDTH = NAME_TAG_MAX_WIDTH - NAME_TAG_HORIZONTAL_PADDING * 2;
 const BACKGROUND_REMOVAL_MAX_IMAGE_SIZE = 1024;
+const SHOULD_USE_BACKGROUND_REMOVAL_API = true;
 
 type ActionButtonProps = {
   accessibilityLabel: string;
@@ -622,38 +623,10 @@ export default function HomeScreen() {
     }, 0);
   };
 
-  const readImageAsDataUri = async (uri: string) => {
-    const response = await fetch(uri);
-    const imageBlob = await response.blob();
-
-    return new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          resolve(reader.result);
-          return;
-        }
-
-        reject(new Error('Could not read the selected PNG.'));
-      };
-
-      reader.onerror = () => reject(new Error('Could not read the selected PNG.'));
-      reader.readAsDataURL(imageBlob);
-    });
-  };
-
   const createPlushFromImage = async (selectedImage: ImagePicker.ImagePickerAsset) => {
     setIsRemovingBackground(true);
 
     try {
-      const isTransparentPng = selectedImage.mimeType === 'image/png';
-
-      if (isTransparentPng) {
-        addPlush(await readImageAsDataUri(selectedImage.uri));
-        return;
-      }
-
       const longestSide = Math.max(selectedImage.width, selectedImage.height);
       const resizeAction =
         longestSide > BACKGROUND_REMOVAL_MAX_IMAGE_SIZE
@@ -664,9 +637,20 @@ export default function HomeScreen() {
             ]
           : [];
       const normalizedImage = await ImageManipulator.manipulateAsync(selectedImage.uri, resizeAction, {
+        base64: true,
         compress: 1,
         format: ImageManipulator.SaveFormat.PNG,
       });
+
+      if (!SHOULD_USE_BACKGROUND_REMOVAL_API) {
+        if (!normalizedImage.base64) {
+          throw new Error('Could not prepare the selected image.');
+        }
+
+        addPlush(`data:image/png;base64,${normalizedImage.base64}`);
+        return;
+      }
+
       const cutout = await removeBackground({
         uri: normalizedImage.uri,
         fileName: 'plush-photo.png',

@@ -132,10 +132,11 @@ const COLLISION_ALPHA_THRESHOLD = 96;
 const MAX_GRID_SIZE = 132;
 const PLUSH_WIDTH = 3.1;
 const PLUSH_TARGET_SIZE = 1.4;
-const PUFF_AMOUNT = 0.2;
-const EDGE_VOLUME_AMOUNT = 0.075;
+const PUFF_AMOUNT = 0.215;
+const EDGE_VOLUME_AMOUNT = 0.08;
 const FLAT_EDGE_BAND = 0.055;
 const SIDE_THICKNESS = 0;
+const SIDE_SILHOUETTE_SMOOTHING = 0.32;
 const DEFAULT_ROTATION = { x: -0.1, y: -0.25, z: 0 };
 const PHYSICS_GRAVITY = 12.5;
 const DEVICE_SHAKE_UPDATE_MS = 16;
@@ -562,6 +563,47 @@ const colorForGridPoint = (grid: MaskGrid, row: number, col: number) => {
   return getColorAt(grid.png, sourceX, sourceY);
 };
 
+const getSmoothedBoundaryPoint = (
+  cells: boolean[][],
+  pointFor: (row: number, col: number, z?: number) => THREE.Vector3,
+  row: number,
+  col: number,
+  z: number
+) => {
+  const point = pointFor(row, col, z);
+  const neighbors: THREE.Vector3[] = [];
+
+  for (let rowOffset = -1; rowOffset <= 1; rowOffset += 1) {
+    for (let colOffset = -1; colOffset <= 1; colOffset += 1) {
+      if (rowOffset === 0 && colOffset === 0) {
+        continue;
+      }
+
+      const neighborRow = row + rowOffset;
+      const neighborCol = col + colOffset;
+
+      if (
+        isInside(cells, neighborRow - 1, neighborCol - 1) ||
+        isInside(cells, neighborRow - 1, neighborCol) ||
+        isInside(cells, neighborRow, neighborCol - 1) ||
+        isInside(cells, neighborRow, neighborCol)
+      ) {
+        neighbors.push(pointFor(neighborRow, neighborCol, z));
+      }
+    }
+  }
+
+  if (neighbors.length < 2) {
+    return point;
+  }
+
+  const average = neighbors.reduce((sum, neighbor) => sum.add(neighbor), new THREE.Vector3()).multiplyScalar(
+    1 / neighbors.length
+  );
+
+  return point.lerp(average, SIDE_SILHOUETTE_SMOOTHING);
+};
+
 const addSideQuad = (
   positions: number[],
   colors: number[],
@@ -589,6 +631,8 @@ const createSideGeometry = (grid: MaskGrid) => {
   const colors: number[] = [];
   const indices: number[] = [];
   const pointFor = createGridProjector(grid);
+  const sidePointFor = (row: number, col: number, z: number) =>
+    getSmoothedBoundaryPoint(grid.cells, pointFor, row, col, z);
 
   for (let row = 0; row < grid.rows; row += 1) {
     for (let col = 0; col < grid.cols; col += 1) {
@@ -601,10 +645,10 @@ const createSideGeometry = (grid: MaskGrid) => {
           positions,
           colors,
           indices,
-          pointFor(row, col, SIDE_THICKNESS),
-          pointFor(row, col + 1, SIDE_THICKNESS),
-          pointFor(row, col, -SIDE_THICKNESS),
-          pointFor(row, col + 1, -SIDE_THICKNESS),
+          sidePointFor(row, col, SIDE_THICKNESS),
+          sidePointFor(row, col + 1, SIDE_THICKNESS),
+          sidePointFor(row, col, -SIDE_THICKNESS),
+          sidePointFor(row, col + 1, -SIDE_THICKNESS),
           colorForGridPoint(grid, row, col),
           colorForGridPoint(grid, row, col + 1)
         );
@@ -615,10 +659,10 @@ const createSideGeometry = (grid: MaskGrid) => {
           positions,
           colors,
           indices,
-          pointFor(row + 1, col + 1, SIDE_THICKNESS),
-          pointFor(row + 1, col, SIDE_THICKNESS),
-          pointFor(row + 1, col + 1, -SIDE_THICKNESS),
-          pointFor(row + 1, col, -SIDE_THICKNESS),
+          sidePointFor(row + 1, col + 1, SIDE_THICKNESS),
+          sidePointFor(row + 1, col, SIDE_THICKNESS),
+          sidePointFor(row + 1, col + 1, -SIDE_THICKNESS),
+          sidePointFor(row + 1, col, -SIDE_THICKNESS),
           colorForGridPoint(grid, row + 1, col + 1),
           colorForGridPoint(grid, row + 1, col)
         );
@@ -629,10 +673,10 @@ const createSideGeometry = (grid: MaskGrid) => {
           positions,
           colors,
           indices,
-          pointFor(row + 1, col, SIDE_THICKNESS),
-          pointFor(row, col, SIDE_THICKNESS),
-          pointFor(row + 1, col, -SIDE_THICKNESS),
-          pointFor(row, col, -SIDE_THICKNESS),
+          sidePointFor(row + 1, col, SIDE_THICKNESS),
+          sidePointFor(row, col, SIDE_THICKNESS),
+          sidePointFor(row + 1, col, -SIDE_THICKNESS),
+          sidePointFor(row, col, -SIDE_THICKNESS),
           colorForGridPoint(grid, row + 1, col),
           colorForGridPoint(grid, row, col)
         );
@@ -643,10 +687,10 @@ const createSideGeometry = (grid: MaskGrid) => {
           positions,
           colors,
           indices,
-          pointFor(row, col + 1, SIDE_THICKNESS),
-          pointFor(row + 1, col + 1, SIDE_THICKNESS),
-          pointFor(row, col + 1, -SIDE_THICKNESS),
-          pointFor(row + 1, col + 1, -SIDE_THICKNESS),
+          sidePointFor(row, col + 1, SIDE_THICKNESS),
+          sidePointFor(row + 1, col + 1, SIDE_THICKNESS),
+          sidePointFor(row, col + 1, -SIDE_THICKNESS),
+          sidePointFor(row + 1, col + 1, -SIDE_THICKNESS),
           colorForGridPoint(grid, row, col + 1),
           colorForGridPoint(grid, row + 1, col + 1)
         );
