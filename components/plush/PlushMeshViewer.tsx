@@ -196,7 +196,7 @@ const FOCUS_OTHER_OPACITY = 0;
 const PET_PULSE_DURATION_MS = 1200;
 const PET_PULSE_PERIOD_MS = 387;
 const PET_SQUASH_AMOUNT = 0.16;
-const PLUSH_OPACITY_LERP = 0.14;
+const PLUSH_OPACITY_LERP = 0.095;
 const PLUSH_DIM_OPACITY_LERP = 0.32;
 const PLUSH_OPACITY_SNAP_THRESHOLD = 0.015;
 const TAP_MOVE_THRESHOLD = 10;
@@ -2021,8 +2021,18 @@ export function PlushMeshViewer({
         const acceleration = new THREE.Vector3(x, y, z);
         const shake = acceleration.clone().sub(previousAccelerationRef.current);
         const now = Date.now();
+        const canJostlePlushes =
+          physicsEnabledRef.current &&
+          !focusedPlushIdRef.current &&
+          !pendingFocusPlushIdRef.current &&
+          !dimPlushesRef.current &&
+          gatherStartedAtRef.current === null;
 
-        if (now - lastShakeTimeRef.current > DEVICE_SHAKE_COOLDOWN_MS && shake.length() > DEVICE_SHAKE_THRESHOLD) {
+        if (
+          canJostlePlushes &&
+          now - lastShakeTimeRef.current > DEVICE_SHAKE_COOLDOWN_MS &&
+          shake.length() > DEVICE_SHAKE_THRESHOLD
+        ) {
           applyShakeImpulse(runtimesRef.current, shake);
           lastShakeTimeRef.current = now;
         }
