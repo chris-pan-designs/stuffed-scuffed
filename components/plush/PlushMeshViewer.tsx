@@ -12,13 +12,14 @@ import type { DetectedOutline } from '@/lib/outlineDetection';
 type PlushMeshViewerProps = {
   backgroundColor?: string;
   focusedPlushId?: string | null;
-  onFocusedPlushLayout?: (layout: { x: number; y: number }) => void;
+  onFocusedPlushLayout?: (layout: { petX: number; petY: number; x: number; y: number }) => void;
   onEmptyPress?: () => void;
   onPlushDragChange?: (isDragging: boolean) => void;
   onPlushDrop?: (plushId: string, point: { x: number; y: number }) => void;
   onPlushPress?: (plushId: string) => void;
   onPlushesPrepared?: () => void;
   partyPulseKey?: number;
+  petPulseKey?: number;
   plushes: {
     id: string;
     imageUri: string;
@@ -123,7 +124,7 @@ const ALPHA_THRESHOLD = 24;
 const COLLISION_ALPHA_THRESHOLD = 96;
 const MAX_GRID_SIZE = 132;
 const PLUSH_WIDTH = 3.1;
-const PLUSH_TARGET_SIZE = 1.1;
+const PLUSH_TARGET_SIZE = 1.4;
 const PUFF_AMOUNT = 0.2;
 const EDGE_VOLUME_AMOUNT = 0.075;
 const FLAT_EDGE_BAND = 0.055;
@@ -177,6 +178,9 @@ const FOCUS_LERP = 0.09;
 const FOCUS_FRONT_FACE_DURATION_MS = 520;
 const FOCUS_ROTATION_LERP = 0.06;
 const FOCUS_OTHER_OPACITY = 0;
+const PET_PULSE_DURATION_MS = 1200;
+const PET_PULSE_PERIOD_MS = 387;
+const PET_SQUASH_AMOUNT = 0.16;
 const TAP_MOVE_THRESHOLD = 10;
 const SHADOW_BASE_OPACITY = 0.14;
 const SHADOW_MIN_OPACITY = 0.025;
@@ -821,6 +825,44 @@ const getProjectedHalfExtents = (mesh: THREE.Group, physics: PhysicsState) => {
   };
 };
 
+const getProjectedTopVisibleAnchor = (mesh: THREE.Group) => {
+  const hitMask = mesh.userData.hitMask as PlushHitMask | undefined;
+  const points = hitMask?.collisionPoints;
+
+  if (!points || points.length === 0) {
+    return new THREE.Vector2(0, 0);
+  }
+
+  let topY = -Infinity;
+  const projectedPoints: THREE.Vector2[] = [];
+
+  for (const point of points) {
+    const projectedPoint = point.clone().applyQuaternion(mesh.quaternion);
+    const projected2DPoint = new THREE.Vector2(projectedPoint.x, projectedPoint.y);
+
+    projectedPoints.push(projected2DPoint);
+    topY = Math.max(topY, projectedPoint.y);
+  }
+
+  const topBandHeight = Math.max(0.08, (mesh.userData.physicsHalfHeight as number | undefined) ?? 0.08) * 0.22;
+  let weightedX = 0;
+  let weightTotal = 0;
+
+  for (const point of projectedPoints) {
+    const distanceFromTop = topY - point.y;
+
+    if (distanceFromTop > topBandHeight) {
+      continue;
+    }
+
+    const weight = 1 - distanceFromTop / topBandHeight;
+    weightedX += point.x * weight;
+    weightTotal += weight;
+  }
+
+  return new THREE.Vector2(weightTotal > 0 ? weightedX / weightTotal : 0, topY);
+};
+
 const getVisualDepthForIndex = (index: number, totalCount: number) =>
   THREE.MathUtils.clamp((index - (totalCount - 1) / 2) * PLUSH_DEPTH_SPACING, -PLUSH_MAX_DEPTH, PLUSH_MAX_DEPTH);
 
@@ -897,7 +939,8 @@ const applyFocusFrame = (
   frameTime: number,
   focusStartedAt: number,
   layout: { width: number; height: number },
-  onFocusedPlushLayout?: (layout: { x: number; y: number }) => void
+  onFocusedPlushLayout?: (layout: { petX: number; petY: number; x: number; y: number }) => void,
+  petStartedAt?: number | null
 ) => {
   const focusedRuntime = runtimes.find((runtime) => runtime.id === focusedPlushId);
 
@@ -930,16 +973,34 @@ const applyFocusFrame = (
     }
     runtime.mesh.position.copy(runtime.physics.position);
     resetPlushSoftness(runtime.mesh, runtime.softness);
+
+    if (petStartedAt !== null && petStartedAt !== undefined) {
+      const elapsedPetTime = frameTime - petStartedAt;
+
+      if (elapsedPetTime >= 0 && elapsedPetTime <= PET_PULSE_DURATION_MS) {
+        const pulsePhase = (elapsedPetTime % PET_PULSE_PERIOD_MS) / PET_PULSE_PERIOD_MS;
+        const pulse = Math.sin(pulsePhase * Math.PI);
+        const visualGroup = getPlushVisualGroup(runtime.mesh);
+
+        visualGroup?.scale.set(1 + pulse * PET_SQUASH_AMOUNT * 0.22, 1 - pulse * PET_SQUASH_AMOUNT, 1);
+        visualGroup?.position.set(0, -pulse * PET_SQUASH_AMOUNT * 0.18, 0);
+      }
+    }
   });
 
   if (focusedRuntime) {
     focusedRuntime.mesh.position.z = focusedRuntime.depthZ;
 
     if (onFocusedPlushLayout && state.viewportWorldWidth > 0 && state.viewportWorldHeight > 0) {
+      const topVisibleAnchor = getProjectedTopVisibleAnchor(focusedRuntime.mesh);
       const tagAnchorWorldY =
         focusedRuntime.physics.position.y + focusedRuntime.physics.halfHeight * 0.84;
+      const petAnchorWorldX = focusedRuntime.physics.position.x + topVisibleAnchor.x;
+      const petAnchorWorldY = focusedRuntime.physics.position.y + topVisibleAnchor.y;
 
       onFocusedPlushLayout({
+        petX: (petAnchorWorldX / state.viewportWorldWidth + 0.5) * layout.width,
+        petY: (0.5 - petAnchorWorldY / state.viewportWorldHeight) * layout.height,
         x: (focusedRuntime.physics.position.x / state.viewportWorldWidth + 0.5) * layout.width,
         y: (0.5 - tagAnchorWorldY / state.viewportWorldHeight) * layout.height,
       });
@@ -1672,6 +1733,7 @@ export function PlushMeshViewer({
   onPlushPress,
   onPlushesPrepared,
   partyPulseKey = 0,
+  petPulseKey = 0,
   plushes,
   physicsEnabled = false,
 }: PlushMeshViewerProps) {
@@ -1695,6 +1757,9 @@ export function PlushMeshViewer({
   const onFocusedPlushLayoutRef = useRef(onFocusedPlushLayout);
   const focusStartedAtRef = useRef<number | null>(null);
   const isExitingFocusRef = useRef(false);
+  const isPetPulsePendingRef = useRef(false);
+  const petPulseKeyRef = useRef(petPulseKey);
+  const petStartedAtRef = useRef<number | null>(null);
   const rotationRef = useRef(DEFAULT_ROTATION);
   const gestureStartRotationRef = useRef(DEFAULT_ROTATION);
   const gestureStartedOnEmptyRef = useRef(false);
@@ -1716,12 +1781,23 @@ export function PlushMeshViewer({
   }, [onFocusedPlushLayout]);
 
   useEffect(() => {
+    if (petPulseKey > petPulseKeyRef.current) {
+      petStartedAtRef.current = null;
+      isPetPulsePendingRef.current = true;
+    }
+
+    petPulseKeyRef.current = petPulseKey;
+  }, [petPulseKey]);
+
+  useEffect(() => {
     if (focusedPlushIdRef.current && !focusedPlushId) {
       isExitingFocusRef.current = true;
     }
 
     focusedPlushIdRef.current = focusedPlushId;
     focusStartedAtRef.current = null;
+    petStartedAtRef.current = null;
+    isPetPulsePendingRef.current = false;
     activeRuntimeRef.current = null;
     onPlushDragChange?.(false);
   }, [focusedPlushId, onPlushDragChange]);
@@ -2086,6 +2162,11 @@ export function PlushMeshViewer({
           focusStartedAtRef.current = frameTime;
         }
 
+        if (isPetPulsePendingRef.current) {
+          petStartedAtRef.current = frameTime;
+          isPetPulsePendingRef.current = false;
+        }
+
         applyFocusFrame(
           runtimesRef.current,
           focusedPlushId,
@@ -2093,7 +2174,8 @@ export function PlushMeshViewer({
           frameTime,
           focusStartedAtRef.current,
           layoutRef.current,
-          onFocusedPlushLayoutRef.current
+          onFocusedPlushLayoutRef.current,
+          petStartedAtRef.current
         );
       } else if (physicsEnabledRef.current) {
         runtimesRef.current.forEach((runtime) => {

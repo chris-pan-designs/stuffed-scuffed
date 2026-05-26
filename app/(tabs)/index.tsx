@@ -111,6 +111,12 @@ const FOCUS_DOCK_TONES = {
     outerBackground: '#FBF5EF',
     primary: '#BF2C4D',
   },
+  pet: {
+    background: '#DCF7F7',
+    border: '#73DCE3',
+    outerBackground: '#FBF5EF',
+    primary: '#28ACB8',
+  },
 } satisfies Record<string, DockButtonTone>;
 
 const PhotoLibraryIcon = ({ color }: { color: string }) => (
@@ -232,8 +238,31 @@ const DeleteIcon = ({ color }: { color: string }) => (
   </Svg>
 );
 
+const PetIcon = ({ color }: { color: string }) => (
+  <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
+    <Path
+      opacity={0.28}
+      d="M15.4234 12.9997H19.8945C21.2581 12.9997 23.3623 11.3126 21.8448 10.0028C17.4998 5.99971 10.4998 5.99971 5.99985 10.0864M15.4234 12.9997C15.5518 12.8434 15.664 12.6715 15.7568 12.4859C16.0982 11.8031 15.6016 10.9997 14.8382 10.9997H9.99985M15.4234 12.9997C14.9099 13.6247 14.1371 13.9997 13.3074 13.9997H12.1851C12.0633 13.9997 11.9431 14.0281 11.8341 14.0826C10.0283 14.9855 8.00072 15.3464 5.99609 15.1233C5.99858 15.0824 5.99985 15.0412 5.99985 14.9997V10.0864M5.99985 10.0864V9.99971"
+      stroke={color}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={2}
+    />
+    <Path
+      d="M1 15C1 16.6569 2.34315 18 4 18C5.65685 18 7 16.6569 7 15V10C7 8.34315 5.65685 7 4 7C2.34315 7 1 8.34315 1 10V15Z"
+      fill={color}
+    />
+  </Svg>
+);
+
 const discoGif = require('@/assets/party mode assets/disco.gif');
+const pettingGif = require('@/assets/petting.gif');
 const sparklesGif = require('@/assets/party mode assets/sparkles.gif');
+const PETTING_GIF_LOOP_MS = 350;
+const PETTING_GIF_PLAY_COUNT = 3;
+const PETTING_GIF_VISIBLE_MS = PETTING_GIF_LOOP_MS * PETTING_GIF_PLAY_COUNT;
+const PETTING_OVERLAY_WIDTH = 116;
+const PETTING_OVERLAY_TOP_OFFSET = 38;
 
 type ActionButtonProps = {
   accessibilityLabel: string;
@@ -295,11 +324,16 @@ export default function HomeScreen() {
   const [playAreaSize, setPlayAreaSize] = useState({ width: 0, height: 0 });
   const [nameTagSize, setNameTagSize] = useState({ width: 0, height: 0 });
   const [focusedPlushId, setFocusedPlushId] = useState<string | null>(null);
+  const [isPetting, setIsPetting] = useState(false);
+  const [petPulseKey, setPetPulseKey] = useState(0);
   const partyTransition = useRef(new Animated.Value(0)).current;
   const partyChromeTransition = useRef(new Animated.Value(0)).current;
   const partyGradientMotion = useRef(new Animated.Value(0)).current;
   const focusModeTransition = useRef(new Animated.Value(0)).current;
+  const petTransition = useRef(new Animated.Value(0)).current;
+  const pettingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nameTagPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const petPosition = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
   const isWorking = isPreparingPlush || isRemovingBackground;
   const focusedPlush = plushes.find((plush) => plush.id === focusedPlushId);
 
@@ -390,6 +424,24 @@ export default function HomeScreen() {
       useNativeDriver: true,
     }).start();
   }, [focusedPlush, focusModeTransition]);
+
+  useEffect(() => {
+    Animated.timing(petTransition, {
+      toValue: isPetting ? 1 : 0,
+      duration: isPetting ? 120 : 180,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [isPetting, petTransition]);
+
+  useEffect(
+    () => () => {
+      if (pettingTimeoutRef.current) {
+        clearTimeout(pettingTimeoutRef.current);
+      }
+    },
+    []
+  );
 
   const addPlush = (imageUri: string) => {
     setIsPreparingPlush(true);
@@ -520,6 +572,7 @@ export default function HomeScreen() {
   const resetPlushes = () => {
     setPlushes([]);
     setFocusedPlushId(null);
+    setIsPetting(false);
     setIsHoldingPlush(false);
     setIsPreparingPlush(false);
     setIsPartyMode(false);
@@ -527,8 +580,26 @@ export default function HomeScreen() {
 
   const focusPlush = (plushId: string) => {
     setIsPartyMode(false);
+    setIsPetting(false);
     setIsHoldingPlush(false);
     setFocusedPlushId(plushId);
+  };
+
+  const petFocusedPlush = () => {
+    if (!focusedPlush) {
+      return;
+    }
+
+    if (pettingTimeoutRef.current) {
+      clearTimeout(pettingTimeoutRef.current);
+    }
+
+    setIsPetting(true);
+    setPetPulseKey((currentKey) => currentKey + 1);
+    pettingTimeoutRef.current = setTimeout(() => {
+      setIsPetting(false);
+      pettingTimeoutRef.current = null;
+    }, PETTING_GIF_VISIBLE_MS);
   };
 
   const editFocusedPlushName = () => {
@@ -563,6 +634,7 @@ export default function HomeScreen() {
     }
 
     setPlushes((currentPlushes) => currentPlushes.filter((plush) => plush.id !== focusedPlush.id));
+    setIsPetting(false);
     setFocusedPlushId(null);
   };
 
@@ -611,7 +683,18 @@ export default function HomeScreen() {
     inputRange: [0, 0.55, 1],
     outputRange: [8, 8, 0],
   });
-  const nameTagOpacity = focusModeTransition;
+  const petOpacity = petTransition;
+  const nameTagOpacity = Animated.multiply(
+    focusModeTransition,
+    petTransition.interpolate({
+      inputRange: [0, 1],
+      outputRange: [1, 0],
+    })
+  );
+  const petScale = petTransition.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.96, 1],
+  });
 
   return (
     <Animated.View style={[styles.screen, { backgroundColor: screenBackgroundColor, paddingTop: insets.top + 16 }]}>
@@ -652,6 +735,10 @@ export default function HomeScreen() {
               backgroundColor="#FCF1E9"
               focusedPlushId={focusedPlushId}
               onFocusedPlushLayout={(layout) => {
+                petPosition.setValue({
+                  x: layout.petX - PETTING_OVERLAY_WIDTH / 2,
+                  y: layout.petY - PETTING_OVERLAY_TOP_OFFSET,
+                });
                 nameTagPosition.setValue({
                   x: layout.x - playAreaSize.width / 2,
                   y: layout.y - nameTagSize.height - 40,
@@ -662,6 +749,7 @@ export default function HomeScreen() {
               onPlushDrop={handlePlushDrop}
               onPlushPress={focusPlush}
               partyPulseKey={partyPulseKey}
+              petPulseKey={petPulseKey}
               plushes={plushes}
               physicsEnabled={!focusedPlushId}
               onPlushesPrepared={() => setIsPreparingPlush(false)}
@@ -694,6 +782,25 @@ export default function HomeScreen() {
               },
             ]}>
             <Text style={[styles.nameTagText, { fontFamily: dockLabelFontFamily }]}>{focusedPlush.name}</Text>
+          </Animated.View>
+        ) : null}
+
+        {focusedPlush && isPetting ? (
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.pettingOverlay,
+              {
+                opacity: petOpacity,
+                top: 0,
+                transform: [
+                  { translateX: petPosition.x },
+                  { translateY: petPosition.y },
+                  { scale: petScale },
+                ],
+              },
+            ]}>
+            <Image key={petPulseKey} source={pettingGif} style={styles.pettingImage} />
           </Animated.View>
         ) : null}
 
@@ -818,6 +925,15 @@ export default function HomeScreen() {
 
               <View style={styles.focusPairedActionFrame}>
                 <ActionButton
+                  accessibilityLabel="Pet plush"
+                  fontFamily={dockLabelFontFamily}
+                  icon={(color) => <PetIcon color={color} />}
+                  label="Pet"
+                  onPress={petFocusedPlush}
+                  tone={FOCUS_DOCK_TONES.pet}
+                />
+
+                <ActionButton
                   accessibilityLabel="Edit plush name"
                   fontFamily={dockLabelFontFamily}
                   icon={(color) => <EditIcon color={color} />}
@@ -940,6 +1056,19 @@ const styles = StyleSheet.create({
     letterSpacing: 0,
     lineHeight: 17,
   },
+  pettingOverlay: {
+    position: 'absolute',
+    zIndex: 7,
+    left: 0,
+    top: 0,
+    width: PETTING_OVERLAY_WIDTH,
+    height: 82,
+  },
+  pettingImage: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'contain',
+  },
   trashButton: {
     position: 'absolute',
     zIndex: 6,
@@ -987,7 +1116,7 @@ const styles = StyleSheet.create({
     width: 82,
   },
   focusPairedActionFrame: {
-    width: 172,
+    width: 262,
     flexDirection: 'row',
     gap: 8,
   },
