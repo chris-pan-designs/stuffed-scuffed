@@ -1,0 +1,1231 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Stuffed & Scuffed Browser Plush Physics</title>
+    <style>
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #ffffff;
+        touch-action: none;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      #play-area {
+        position: relative;
+        width: 360px;
+        height: 360px;
+        overflow: hidden;
+        border-radius: 22px;
+        background: #ffffff;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
+      }
+
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+    </style>
+  </head>
+  <body>
+    <main id="play-area" aria-label="Interactive plush play area">
+    </main>
+
+    <script type="module">
+      import * as THREE from "../node_modules/three/build/three.module.js";
+
+      const ALPHA_THRESHOLD = 24;
+      const COLLISION_ALPHA_THRESHOLD = 96;
+      const MAX_GRID_SIZE = 132;
+      const PLUSH_WIDTH = 3.1;
+      const PLUSH_TARGET_SIZE = 2;
+      const PUFF_AMOUNT = 0.215;
+      const EDGE_VOLUME_AMOUNT = 0.08;
+      const FLAT_EDGE_BAND = 0.055;
+      const SIDE_THICKNESS = 0;
+      const SIDE_SILHOUETTE_SMOOTHING = 0.32;
+      const DEFAULT_ROTATION = { x: -0.1, y: -0.25, z: 0 };
+      const PHYSICS_GRAVITY = 12.5;
+      const PARTY_PULSE_UPWARD_IMPULSE = 6.2;
+      const PARTY_PULSE_SIDE_IMPULSE = 1.8;
+      const PARTY_PULSE_TUMBLE = 5.4;
+      const PARTY_PULSE_STAGGER_MS = 140;
+      const PHYSICS_BOUNCE = 0.38;
+      const PHYSICS_LINEAR_DAMPING = 0.992;
+      const PHYSICS_ANGULAR_DAMPING = 0.999;
+      const PHYSICS_FLOOR_ANGULAR_DAMPING = 0.9;
+      const PHYSICS_FLOOR_FRICTION = 0.92;
+      const PHYSICS_REST_VELOCITY = 0.035;
+      const PHYSICS_SLEEP_VELOCITY = 0.045;
+      const PHYSICS_SLEEP_ANGULAR_VELOCITY = 0.06;
+      const PHYSICS_FLOOR_REST_DAMPING = 0.9;
+      const PHYSICS_FLOOR_REST_ANGULAR_DAMPING = 0.84;
+      const PHYSICS_DRAG_ROTATION = 0.68;
+      const PHYSICS_RELEASE_TORQUE = 0.54;
+      const PHYSICS_RELEASE_VELOCITY_SCALE = 0.48;
+      const PHYSICS_THROW_TUMBLE = 0.95;
+      const PHYSICS_MAX_ANGULAR_SPEED = 8.5;
+      const PHYSICS_HANG_TORQUE = 18;
+      const PHYSICS_HANG_DAMPING = 0.975;
+      const PHYSICS_FLOOR_TOPPLE_TORQUE = 4.8;
+      const PHYSICS_AIR_GRAVITY_TUMBLE = 0.62;
+      const PHYSICS_AIR_GRAVITY_ROLL = 0.3;
+      const PHYSICS_PLUSH_COLLISION_BOUNCE = 0.34;
+      const PHYSICS_PLUSH_COLLISION_PUSH = 0.42;
+      const PHYSICS_PLUSH_COLLISION_RADIUS_SCALE = 0.86;
+      const PHYSICS_PLUSH_RESTING_CONTACT_SPEED = 0.22;
+      const PHYSICS_PLUSH_CONTACT_DAMPING = 0.52;
+      const PHYSICS_PLUSH_RESTING_OVERLAP_ALLOWANCE = 1;
+      const PHYSICS_PLUSH_MAX_MASK_PUSH = 0.022;
+      const PHYSICS_PLUSH_RESTING_POSITION_CORRECTION = 0.7;
+      const PLUSH_DEPTH_SPACING = 0.045;
+      const PLUSH_MAX_DEPTH = 0.14;
+      const MAX_COLLISION_SAMPLE_POINTS = 520;
+      const PHYSICS_SCREEN_COLLISION_CELL_SIZE = 0.035;
+      const SHADOW_BASE_OPACITY = 0.14;
+      const SHADOW_MIN_OPACITY = 0.025;
+      const SHADOW_MAX_LIFT = 4.2;
+      const SHADOW_DEPTH_OFFSET = 0.035;
+      const SHADOW_FLOOR_INSET = 0.19;
+      const TAP_MOVE_THRESHOLD = 10;
+      const PARTY_PULSE_INTERVAL_MS = 1500;
+
+      const plushSoftnessTuning = {
+        impactSquashAmount: 0.16,
+        squashDuration: 0.16,
+        returnSpringStrength: 95,
+        wobbleAmount: 0.085,
+        maxSquash: 0.24,
+        impactStretchAmount: 0.46,
+        impactThreshold: 0.06,
+        impactStrengthForMaxSquash: 2.2,
+        scaleDamping: 13,
+        wobbleSpringStrength: 58,
+        wobbleDamping: 8.5,
+        bodyFlexAmount: 0,
+        maxBend: 0.05,
+        bendSpringStrength: 42,
+        bendDamping: 7.5,
+        velocityBendAmount: 0.032,
+        spinBendAmount: 0.018,
+        impactDentAmount: 0.18,
+        maxDent: 0.22,
+        dentRadius: 0.88,
+        dentSpringStrength: 92,
+        dentDamping: 10,
+      };
+
+      const playArea = document.getElementById("play-area");
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+      const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+      const textureLoader = new THREE.TextureLoader();
+      const gravity = new THREE.Vector3(0, -PHYSICS_GRAVITY, 0);
+      const pointer = {
+        active: false,
+        id: null,
+        startX: 0,
+        startY: 0,
+        lastX: 0,
+        lastY: 0,
+        lastTime: 0,
+        velocityX: 0,
+        velocityY: 0,
+        runtime: null,
+      };
+      let viewportWorldWidth = 1;
+      let viewportWorldHeight = 1;
+      let runtimes = [];
+
+      renderer.setClearColor(0xffffff, 0);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      playArea.prepend(renderer.domElement);
+      camera.position.z = 6;
+
+      const clamp = THREE.MathUtils.clamp;
+
+      const loadImageData = async (src) => {
+        const image = await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = reject;
+          img.src = src;
+        });
+        const canvas = document.createElement("canvas");
+        canvas.width = image.naturalWidth || image.width;
+        canvas.height = image.naturalHeight || image.height;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        context.drawImage(image, 0, 0);
+        return {
+          canvas,
+          data: context.getImageData(0, 0, canvas.width, canvas.height).data,
+          height: canvas.height,
+          src,
+          width: canvas.width,
+        };
+      };
+
+      const getAlphaAt = (image, x, y) => {
+        const clampedX = Math.max(0, Math.min(image.width - 1, x));
+        const clampedY = Math.max(0, Math.min(image.height - 1, y));
+        return image.data[(image.width * clampedY + clampedX) * 4 + 3];
+      };
+
+      const getColorAt = (image, x, y) => {
+        const clampedX = Math.max(0, Math.min(image.width - 1, x));
+        const clampedY = Math.max(0, Math.min(image.height - 1, y));
+        const index = (image.width * clampedY + clampedX) * 4;
+        return new THREE.Color(image.data[index] / 255, image.data[index + 1] / 255, image.data[index + 2] / 255);
+      };
+
+      const sampleCellAlpha = (image, row, col, rows, cols) => {
+        let total = 0;
+        let count = 0;
+        for (let ySample = 0; ySample < 3; ySample += 1) {
+          for (let xSample = 0; xSample < 3; xSample += 1) {
+            const sourceX = Math.floor(((col + (xSample + 0.5) / 3) / cols) * image.width);
+            const sourceY = Math.floor(((row + (ySample + 0.5) / 3) / rows) * image.height);
+            total += getAlphaAt(image, sourceX, sourceY);
+            count += 1;
+          }
+        }
+        return total / count;
+      };
+
+      const isInside = (cells, row, col) =>
+        row >= 0 && row < cells.length && col >= 0 && col < cells[0].length && cells[row][col];
+
+      const isBoundaryCell = (cells, row, col) =>
+        isInside(cells, row, col) &&
+        (!isInside(cells, row - 1, col) ||
+          !isInside(cells, row + 1, col) ||
+          !isInside(cells, row, col - 1) ||
+          !isInside(cells, row, col + 1));
+
+      const computeCellDistances = (cells) => {
+        const rows = cells.length;
+        const cols = cells[0].length;
+        const distances = Array.from({ length: rows }, () => Array.from({ length: cols }, () => 0));
+        const queue = [];
+        for (let row = 0; row < rows; row += 1) {
+          for (let col = 0; col < cols; col += 1) {
+            if (isBoundaryCell(cells, row, col)) {
+              distances[row][col] = 1;
+              queue.push({ row, col });
+            }
+          }
+        }
+        const neighbors = [
+          { row: -1, col: 0 },
+          { row: 1, col: 0 },
+          { row: 0, col: -1 },
+          { row: 0, col: 1 },
+        ];
+        for (let cursor = 0; cursor < queue.length; cursor += 1) {
+          const current = queue[cursor];
+          for (const neighbor of neighbors) {
+            const nextRow = current.row + neighbor.row;
+            const nextCol = current.col + neighbor.col;
+            if (isInside(cells, nextRow, nextCol) && distances[nextRow][nextCol] === 0) {
+              distances[nextRow][nextCol] = distances[current.row][current.col] + 1;
+              queue.push({ row: nextRow, col: nextCol });
+            }
+          }
+        }
+        return distances;
+      };
+
+      const findVisibleBounds = (cells) => {
+        let minCol = cells[0].length;
+        let maxCol = 0;
+        let minRow = cells.length;
+        let maxRow = 0;
+        for (let row = 0; row < cells.length; row += 1) {
+          for (let col = 0; col < cells[0].length; col += 1) {
+            if (cells[row][col]) {
+              minCol = Math.min(minCol, col);
+              maxCol = Math.max(maxCol, col + 1);
+              minRow = Math.min(minRow, row);
+              maxRow = Math.max(maxRow, row + 1);
+            }
+          }
+        }
+        if (minCol > maxCol || minRow > maxRow) {
+          return { minCol: 0, maxCol: cells[0].length, minRow: 0, maxRow: cells.length };
+        }
+        return { minCol, maxCol, minRow, maxRow };
+      };
+
+      const createMaskGrid = (image) => {
+        const aspectRatio = image.width / image.height;
+        const cols = aspectRatio >= 1 ? MAX_GRID_SIZE : Math.max(18, Math.round(MAX_GRID_SIZE * aspectRatio));
+        const rows = aspectRatio >= 1 ? Math.max(18, Math.round(MAX_GRID_SIZE / aspectRatio)) : MAX_GRID_SIZE;
+        const cells = Array.from({ length: rows }, () => Array.from({ length: cols }, () => false));
+        const collisionCells = Array.from({ length: rows }, () => Array.from({ length: cols }, () => false));
+        for (let row = 0; row < rows; row += 1) {
+          for (let col = 0; col < cols; col += 1) {
+            const alpha = sampleCellAlpha(image, row, col, rows, cols);
+            cells[row][col] = alpha > ALPHA_THRESHOLD;
+            collisionCells[row][col] = alpha > COLLISION_ALPHA_THRESHOLD;
+          }
+        }
+        return {
+          aspectRatio,
+          cells,
+          collisionCells,
+          cols,
+          distances: computeCellDistances(cells),
+          image,
+          rows,
+          visibleBounds: findVisibleBounds(cells),
+        };
+      };
+
+      const createGridMetrics = (grid) => {
+        const width = PLUSH_WIDTH;
+        const height = PLUSH_WIDTH / grid.aspectRatio;
+        const { minCol, maxCol, minRow, maxRow } = grid.visibleBounds;
+        const centerCol = (minCol + maxCol) / 2;
+        const centerRow = (minRow + maxRow) / 2;
+        const visibleWidth = ((maxCol - minCol) / grid.cols) * width;
+        const visibleHeight = ((maxRow - minRow) / grid.rows) * height;
+        const scale = PLUSH_TARGET_SIZE / Math.max(visibleWidth, visibleHeight, 0.001);
+        return {
+          centerCol,
+          centerRow,
+          scale,
+          scaledHeight: height * scale,
+          scaledVisibleHeight: visibleHeight * scale,
+          scaledVisibleWidth: visibleWidth * scale,
+          scaledWidth: width * scale,
+        };
+      };
+
+      const createGridProjector = (grid) => {
+        const { centerCol, centerRow, scaledHeight, scaledWidth } = createGridMetrics(grid);
+        return (row, col, z = 0) =>
+          new THREE.Vector3(((col - centerCol) / grid.cols) * scaledWidth, ((centerRow - row) / grid.rows) * scaledHeight, z);
+      };
+
+      const getVertexDistance = (grid, gridRow, gridCol) => {
+        const values = [];
+        let touchesTransparentSpace = false;
+        for (let rowOffset = -1; rowOffset <= 0; rowOffset += 1) {
+          for (let colOffset = -1; colOffset <= 0; colOffset += 1) {
+            const row = gridRow + rowOffset;
+            const col = gridCol + colOffset;
+            if (isInside(grid.cells, row, col)) {
+              values.push(grid.distances[row][col]);
+            } else {
+              touchesTransparentSpace = true;
+            }
+          }
+        }
+        if (values.length === 0) return 0;
+        if (touchesTransparentSpace) return 1;
+        return values.reduce((sum, value) => sum + value, 0) / values.length;
+      };
+
+      const createSurfaceGeometry = (grid, direction) => {
+        const maxDistance = Math.max(1, ...grid.distances.flat());
+        const projectPoint = createGridProjector(grid);
+        const positions = [];
+        const uvs = [];
+        const indices = [];
+        for (let row = 0; row <= grid.rows; row += 1) {
+          for (let col = 0; col <= grid.cols; col += 1) {
+            const distance = getVertexDistance(grid, row, col);
+            const normalizedDistance = Math.max(0, (distance - 1) / Math.max(1, maxDistance - 1));
+            const volumeDistance = Math.max(0, (normalizedDistance - FLAT_EDGE_BAND) / (1 - FLAT_EDGE_BAND));
+            const smoothPuff = volumeDistance * volumeDistance * (3 - 2 * volumeDistance);
+            const edgeVolume = EDGE_VOLUME_AMOUNT * (1 - Math.exp(-volumeDistance * 18));
+            const puff = edgeVolume + (PUFF_AMOUNT - EDGE_VOLUME_AMOUNT) * smoothPuff;
+            const point = projectPoint(row, col, direction * (SIDE_THICKNESS + puff));
+            positions.push(point.x, point.y, point.z);
+            uvs.push(col / grid.cols, 1 - row / grid.rows);
+          }
+        }
+        const vertexIndex = (row, col) => row * (grid.cols + 1) + col;
+        for (let row = 0; row < grid.rows; row += 1) {
+          for (let col = 0; col < grid.cols; col += 1) {
+            if (!grid.cells[row][col]) continue;
+            const topLeft = vertexIndex(row, col);
+            const topRight = vertexIndex(row, col + 1);
+            const bottomLeft = vertexIndex(row + 1, col);
+            const bottomRight = vertexIndex(row + 1, col + 1);
+            if (direction === 1) {
+              indices.push(topLeft, bottomLeft, topRight, topRight, bottomLeft, bottomRight);
+            } else {
+              indices.push(topLeft, topRight, bottomLeft, topRight, bottomRight, bottomLeft);
+            }
+          }
+        }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+        geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+        geometry.setIndex(indices);
+        geometry.computeVertexNormals();
+        return geometry;
+      };
+
+      const colorForGridPoint = (grid, row, col) => {
+        const sourceX = Math.floor((col / grid.cols) * grid.image.width);
+        const sourceY = Math.floor((row / grid.rows) * grid.image.height);
+        return getColorAt(grid.image, sourceX, sourceY);
+      };
+
+      const getSmoothedBoundaryPoint = (cells, pointFor, row, col, z) => {
+        const point = pointFor(row, col, z);
+        const neighbors = [];
+        for (let rowOffset = -1; rowOffset <= 1; rowOffset += 1) {
+          for (let colOffset = -1; colOffset <= 1; colOffset += 1) {
+            if (rowOffset === 0 && colOffset === 0) continue;
+            const neighborRow = row + rowOffset;
+            const neighborCol = col + colOffset;
+            if (
+              isInside(cells, neighborRow - 1, neighborCol - 1) ||
+              isInside(cells, neighborRow - 1, neighborCol) ||
+              isInside(cells, neighborRow, neighborCol - 1) ||
+              isInside(cells, neighborRow, neighborCol)
+            ) {
+              neighbors.push(pointFor(neighborRow, neighborCol, z));
+            }
+          }
+        }
+        if (neighbors.length < 2) return point;
+        const average = neighbors.reduce((sum, neighbor) => sum.add(neighbor), new THREE.Vector3()).multiplyScalar(1 / neighbors.length);
+        return point.lerp(average, SIDE_SILHOUETTE_SMOOTHING);
+      };
+
+      const addSideQuad = (positions, colors, indices, a, b, c, d, colorA, colorB) => {
+        const start = positions.length / 3;
+        positions.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z, d.x, d.y, d.z);
+        colors.push(colorA.r, colorA.g, colorA.b, colorB.r, colorB.g, colorB.b, colorA.r, colorA.g, colorA.b, colorB.r, colorB.g, colorB.b);
+        indices.push(start, start + 1, start + 2, start + 1, start + 3, start + 2);
+      };
+
+      const createSideGeometry = (grid) => {
+        const positions = [];
+        const colors = [];
+        const indices = [];
+        const pointFor = createGridProjector(grid);
+        const sidePointFor = (row, col, z) => getSmoothedBoundaryPoint(grid.cells, pointFor, row, col, z);
+        for (let row = 0; row < grid.rows; row += 1) {
+          for (let col = 0; col < grid.cols; col += 1) {
+            if (!grid.cells[row][col]) continue;
+            if (!isInside(grid.cells, row - 1, col)) {
+              addSideQuad(positions, colors, indices, sidePointFor(row, col, SIDE_THICKNESS), sidePointFor(row, col + 1, SIDE_THICKNESS), sidePointFor(row, col, -SIDE_THICKNESS), sidePointFor(row, col + 1, -SIDE_THICKNESS), colorForGridPoint(grid, row, col), colorForGridPoint(grid, row, col + 1));
+            }
+            if (!isInside(grid.cells, row + 1, col)) {
+              addSideQuad(positions, colors, indices, sidePointFor(row + 1, col + 1, SIDE_THICKNESS), sidePointFor(row + 1, col, SIDE_THICKNESS), sidePointFor(row + 1, col + 1, -SIDE_THICKNESS), sidePointFor(row + 1, col, -SIDE_THICKNESS), colorForGridPoint(grid, row + 1, col + 1), colorForGridPoint(grid, row + 1, col));
+            }
+            if (!isInside(grid.cells, row, col - 1)) {
+              addSideQuad(positions, colors, indices, sidePointFor(row + 1, col, SIDE_THICKNESS), sidePointFor(row, col, SIDE_THICKNESS), sidePointFor(row + 1, col, -SIDE_THICKNESS), sidePointFor(row, col, -SIDE_THICKNESS), colorForGridPoint(grid, row + 1, col), colorForGridPoint(grid, row, col));
+            }
+            if (!isInside(grid.cells, row, col + 1)) {
+              addSideQuad(positions, colors, indices, sidePointFor(row, col + 1, SIDE_THICKNESS), sidePointFor(row + 1, col + 1, SIDE_THICKNESS), sidePointFor(row, col + 1, -SIDE_THICKNESS), sidePointFor(row + 1, col + 1, -SIDE_THICKNESS), colorForGridPoint(grid, row, col + 1), colorForGridPoint(grid, row + 1, col + 1));
+            }
+          }
+        }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+        geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+        geometry.setIndex(indices);
+        geometry.computeVertexNormals();
+        return geometry;
+      };
+
+      const addGpuBendToMaterial = (material, halfWidth, halfHeight) => {
+        const bendUniform = { value: new THREE.Vector2() };
+        const bendStrengthUniform = { value: 0 };
+        const dentAmountUniform = { value: 0 };
+        const dentCenterUniform = { value: new THREE.Vector2(0, -1) };
+        const dentNormalUniform = { value: new THREE.Vector2(0, 1) };
+        const halfSizeUniform = { value: new THREE.Vector2(Math.max(halfWidth, 0.001), Math.max(halfHeight, 0.001)) };
+        material.userData.plushBendUniform = bendUniform;
+        material.userData.plushBendStrengthUniform = bendStrengthUniform;
+        material.userData.plushDentAmountUniform = dentAmountUniform;
+        material.userData.plushDentCenterUniform = dentCenterUniform;
+        material.userData.plushDentNormalUniform = dentNormalUniform;
+        material.onBeforeCompile = (shader) => {
+          shader.uniforms.plushBend = bendUniform;
+          shader.uniforms.plushBendStrength = bendStrengthUniform;
+          shader.uniforms.plushDentAmount = dentAmountUniform;
+          shader.uniforms.plushDentCenter = dentCenterUniform;
+          shader.uniforms.plushDentNormal = dentNormalUniform;
+          shader.uniforms.plushHalfSize = halfSizeUniform;
+          shader.vertexShader = `
+            uniform vec2 plushBend;
+            uniform float plushBendStrength;
+            uniform float plushDentAmount;
+            uniform vec2 plushDentCenter;
+            uniform vec2 plushDentNormal;
+            uniform vec2 plushHalfSize;
+          ${shader.vertexShader}`.replace(
+            "#include <begin_vertex>",
+            `
+            #include <begin_vertex>
+            vec2 plushNormalizedPosition = clamp(transformed.xy / plushHalfSize, vec2(-1.0), vec2(1.0));
+            float plushEdgeGive = max(abs(plushNormalizedPosition.x), abs(plushNormalizedPosition.y));
+            float plushCenterHold = 0.35 + plushEdgeGive * 0.65;
+            transformed.x += plushBend.x * plushNormalizedPosition.y * abs(plushNormalizedPosition.y) * plushCenterHold;
+            transformed.y += plushBend.y * plushNormalizedPosition.x * abs(plushNormalizedPosition.x) * plushCenterHold;
+            transformed.z *= 1.0 - plushBendStrength * 0.45;
+            float plushDentDistance = distance(plushNormalizedPosition, plushDentCenter);
+            float plushDentFalloff = smoothstep(${plushSoftnessTuning.dentRadius.toFixed(2)}, 0.0, plushDentDistance);
+            transformed.xy += plushDentNormal * plushDentAmount * plushDentFalloff * plushHalfSize;
+            transformed.z *= 1.0 - plushDentAmount * plushDentFalloff * 0.75;
+            `
+          );
+        };
+      };
+
+      const createTexture = (image) => {
+        const texture = textureLoader.load(image.src);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.minFilter = THREE.LinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        texture.wrapS = THREE.ClampToEdgeWrapping;
+        texture.wrapT = THREE.ClampToEdgeWrapping;
+        return texture;
+      };
+
+      const createCollisionSamples = (grid) => {
+        const pointFor = createGridProjector(grid);
+        const solidCells = [];
+        for (let row = 0; row < grid.rows; row += 1) {
+          for (let col = 0; col < grid.cols; col += 1) {
+            if (grid.collisionCells[row][col]) solidCells.push({ row, col });
+          }
+        }
+        const step = Math.max(1, Math.ceil(solidCells.length / MAX_COLLISION_SAMPLE_POINTS));
+        const points = [];
+        for (let index = 0; index < solidCells.length; index += step) {
+          const cell = solidCells[index];
+          points.push(pointFor(cell.row + 0.5, cell.col + 0.5, 0));
+        }
+        return { points, spacing: Math.max(1, step) };
+      };
+
+      const createPlushMesh = (image) => {
+        const group = new THREE.Group();
+        const visualGroup = new THREE.Group();
+        const grid = createMaskGrid(image);
+        const gridMetrics = createGridMetrics(grid);
+        const collisionSamples = createCollisionSamples(grid);
+        const photoMaterial = new THREE.MeshBasicMaterial({
+          alphaTest: 0.08,
+          map: createTexture(image),
+          side: THREE.DoubleSide,
+          transparent: true,
+        });
+        const sideMaterial = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, vertexColors: true });
+        addGpuBendToMaterial(photoMaterial, gridMetrics.scaledVisibleWidth / 2, gridMetrics.scaledVisibleHeight / 2);
+        addGpuBendToMaterial(sideMaterial, gridMetrics.scaledVisibleWidth / 2, gridMetrics.scaledVisibleHeight / 2);
+        visualGroup.add(
+          new THREE.Mesh(createSideGeometry(grid), sideMaterial),
+          new THREE.Mesh(createSurfaceGeometry(grid, 1), photoMaterial),
+          new THREE.Mesh(createSurfaceGeometry(grid, -1), photoMaterial)
+        );
+        group.add(visualGroup);
+        group.rotation.set(DEFAULT_ROTATION.x, DEFAULT_ROTATION.y, DEFAULT_ROTATION.z);
+        group.userData.visualGroup = visualGroup;
+        group.userData.physicsRadius = Math.max(gridMetrics.scaledVisibleWidth, gridMetrics.scaledVisibleHeight) / 2;
+        group.userData.physicsHalfWidth = gridMetrics.scaledVisibleWidth / 2;
+        group.userData.physicsHalfHeight = gridMetrics.scaledVisibleHeight / 2;
+        group.userData.hitMask = {
+          cells: grid.cells,
+          centerCol: gridMetrics.centerCol,
+          centerRow: gridMetrics.centerRow,
+          collisionCells: grid.collisionCells,
+          collisionPoints: collisionSamples.points,
+          collisionSampleSpacing: collisionSamples.spacing,
+          cols: grid.cols,
+          rows: grid.rows,
+          scaledHeight: gridMetrics.scaledHeight,
+          scaledWidth: gridMetrics.scaledWidth,
+        };
+        return group;
+      };
+
+      const createShadowTexture = () => {
+        const size = 96;
+        const data = new Uint8Array(size * size * 4);
+        const center = (size - 1) / 2;
+        for (let y = 0; y < size; y += 1) {
+          for (let x = 0; x < size; x += 1) {
+            const dx = (x - center) / center;
+            const dy = (y - center) / center;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            const alpha = Math.max(0, 1 - distance);
+            const featheredAlpha = alpha * alpha * (3 - 2 * alpha);
+            const index = (y * size + x) * 4;
+            data[index + 3] = Math.round(featheredAlpha * 255);
+          }
+        }
+        const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+        texture.needsUpdate = true;
+        return texture;
+      };
+
+      const shadowTexture = createShadowTexture();
+      const createPlushShadow = () => {
+        const shadow = new THREE.Mesh(
+          new THREE.PlaneGeometry(1, 1),
+          new THREE.MeshBasicMaterial({
+            color: 0x000000,
+            depthWrite: false,
+            map: shadowTexture,
+            opacity: SHADOW_BASE_OPACITY,
+            transparent: true,
+          })
+        );
+        shadow.renderOrder = -1;
+        return shadow;
+      };
+
+      const getVisualDepthForIndex = (index, totalCount) =>
+        clamp((index - (totalCount - 1) / 2) * PLUSH_DEPTH_SPACING, -PLUSH_MAX_DEPTH, PLUSH_MAX_DEPTH);
+
+      const createPhysicsState = () => ({
+        angularVelocity: new THREE.Vector3(),
+        dragAnchor: new THREE.Vector3(),
+        dragging: false,
+        grabLocalOffset: new THREE.Vector3(),
+        halfHeight: PLUSH_TARGET_SIZE / 2,
+        halfWidth: PLUSH_TARGET_SIZE / 2,
+        lastFrameTime: null,
+        position: new THREE.Vector3(),
+        radius: PLUSH_TARGET_SIZE / 2,
+        velocity: new THREE.Vector3(),
+      });
+
+      const createSoftnessState = () => ({
+        bend: new THREE.Vector2(),
+        bendVelocity: new THREE.Vector2(),
+        dentAmount: 0,
+        dentCenter: new THREE.Vector2(0, -1),
+        dentNormal: new THREE.Vector2(0, 1),
+        dentVelocity: 0,
+        scale: new THREE.Vector3(1, 1, 1),
+        scaleVelocity: new THREE.Vector3(),
+        wobbleAngle: 0,
+        wobbleVelocity: 0,
+      });
+
+      const getPlushVisualGroup = (mesh) => mesh.userData.visualGroup;
+
+      const getProjectedHalfExtents = (mesh, physics) => {
+        const hitMask = mesh.userData.hitMask;
+        if (!hitMask || hitMask.collisionPoints.length === 0) {
+          const cos = Math.abs(Math.cos(mesh.rotation.z));
+          const sin = Math.abs(Math.sin(mesh.rotation.z));
+          return {
+            x: physics.halfWidth * cos + physics.halfHeight * sin,
+            y: physics.halfWidth * sin + physics.halfHeight * cos,
+          };
+        }
+        let maxX = 0;
+        let maxY = 0;
+        for (const point of hitMask.collisionPoints) {
+          const projectedPoint = point.clone().applyQuaternion(mesh.quaternion);
+          maxX = Math.max(maxX, Math.abs(projectedPoint.x));
+          maxY = Math.max(maxY, Math.abs(projectedPoint.y));
+        }
+        return { x: Math.max(maxX, 0.001), y: Math.max(maxY, 0.001) };
+      };
+
+      const updatePlushShadow = (runtime, isVisible = true) => {
+        const halfExtents = getProjectedHalfExtents(runtime.mesh, runtime.physics);
+        const floorY = -(viewportWorldHeight / 2 - halfExtents.y);
+        const shadowFloorY = -viewportWorldHeight / 2 + SHADOW_FLOOR_INSET;
+        const lift = Math.max(0, runtime.physics.position.y - floorY);
+        const normalizedLift = clamp(lift / SHADOW_MAX_LIFT, 0, 1);
+        const width = Math.max(runtime.physics.halfWidth * (1.12 + normalizedLift * 1.1), 0.16);
+        const height = Math.max(runtime.physics.halfHeight * (0.16 + normalizedLift * 0.12), 0.055);
+        runtime.shadow.visible = isVisible;
+        runtime.shadow.position.set(runtime.physics.position.x, shadowFloorY, runtime.depthZ - SHADOW_DEPTH_OFFSET);
+        runtime.shadow.rotation.set(0, 0, 0);
+        runtime.shadow.scale.set(width, height, 1);
+        runtime.shadow.material.opacity =
+          SHADOW_MIN_OPACITY + (SHADOW_BASE_OPACITY - SHADOW_MIN_OPACITY) * (1 - normalizedLift);
+      };
+
+      const updateGpuBend = (mesh, softness) => {
+        const visualGroup = getPlushVisualGroup(mesh);
+        if (!visualGroup) return;
+        const bendStrength = Math.min(1, softness.bend.length() / plushSoftnessTuning.maxBend);
+        visualGroup.traverse((child) => {
+          if (!(child instanceof THREE.Mesh)) return;
+          const materials = Array.isArray(child.material) ? child.material : [child.material];
+          materials.forEach((material) => {
+            material.userData.plushBendUniform?.value.copy(softness.bend);
+            material.userData.plushDentCenterUniform?.value.copy(softness.dentCenter);
+            material.userData.plushDentNormalUniform?.value.copy(softness.dentNormal);
+            if (material.userData.plushBendStrengthUniform) material.userData.plushBendStrengthUniform.value = bendStrength;
+            if (material.userData.plushDentAmountUniform) material.userData.plushDentAmountUniform.value = softness.dentAmount;
+          });
+        });
+      };
+
+      const resetPlushSoftness = (mesh, softness) => {
+        softness.bend.set(0, 0);
+        softness.bendVelocity.set(0, 0);
+        softness.dentAmount = 0;
+        softness.dentCenter.set(0, -1);
+        softness.dentNormal.set(0, 1);
+        softness.dentVelocity = 0;
+        softness.scale.set(1, 1, 1);
+        softness.scaleVelocity.set(0, 0, 0);
+        softness.wobbleAngle = 0;
+        softness.wobbleVelocity = 0;
+        getPlushVisualGroup(mesh)?.scale.set(1, 1, 1);
+        getPlushVisualGroup(mesh)?.rotation.set(0, 0, 0);
+        updateGpuBend(mesh, softness);
+      };
+
+      const applyPartyPulse = (pulseKey) => {
+        runtimes.forEach((runtime, index) => {
+          window.setTimeout(() => {
+            if (runtime.physics.dragging || !runtimes.includes(runtime)) {
+              return;
+            }
+
+            const direction = (pulseKey + index) % 2 === 0 ? 1 : -1;
+            const wobble = Math.sin((pulseKey + 1) * (index + 1) * 1.73);
+
+            runtime.physics.velocity.x += direction * (PARTY_PULSE_SIDE_IMPULSE + Math.abs(wobble) * 0.7);
+            runtime.physics.velocity.y += PARTY_PULSE_UPWARD_IMPULSE + Math.abs(wobble) * 1.1;
+            runtime.physics.angularVelocity.x += direction * PARTY_PULSE_TUMBLE * 0.35;
+            runtime.physics.angularVelocity.y -= wobble * PARTY_PULSE_TUMBLE * 0.3;
+            runtime.physics.angularVelocity.z += direction * PARTY_PULSE_TUMBLE;
+            clampAngularVelocity(runtime.physics.angularVelocity);
+          }, (index % 5) * PARTY_PULSE_STAGGER_MS);
+        });
+      };
+
+      const registerPlushImpact = (mesh, softness, impact) => {
+        const normalizedStrength = Math.min(1, impact.strength / plushSoftnessTuning.impactStrengthForMaxSquash);
+        const squash = Math.min(plushSoftnessTuning.maxSquash, normalizedStrength * plushSoftnessTuning.impactSquashAmount);
+        if (squash <= 0) return;
+        const localNormal = impact.normal.clone().applyQuaternion(mesh.quaternion.clone().invert()).normalize();
+        const axisWeights = new THREE.Vector3(Math.abs(localNormal.x), Math.abs(localNormal.y), Math.abs(localNormal.z));
+        axisWeights.multiplyScalar(1 / (axisWeights.x + axisWeights.y + axisWeights.z || 1));
+        const stretch = squash * plushSoftnessTuning.impactStretchAmount;
+        const impactScale = new THREE.Vector3(
+          1 - squash * axisWeights.x + stretch * (1 - axisWeights.x) * 0.5,
+          1 - squash * axisWeights.y + stretch * (1 - axisWeights.y) * 0.5,
+          1 - squash * axisWeights.z + stretch * (1 - axisWeights.z) * 0.35
+        );
+        impactScale.set(
+          clamp(impactScale.x, 1 - plushSoftnessTuning.maxSquash, 1 + plushSoftnessTuning.maxSquash),
+          clamp(impactScale.y, 1 - plushSoftnessTuning.maxSquash, 1 + plushSoftnessTuning.maxSquash),
+          clamp(impactScale.z, 1 - plushSoftnessTuning.maxSquash, 1 + plushSoftnessTuning.maxSquash * 0.75)
+        );
+        softness.scale.lerp(impactScale, 0.82);
+        softness.scaleVelocity.addScaledVector(new THREE.Vector3(1, 1, 1).sub(impactScale), 1 / plushSoftnessTuning.squashDuration);
+        const dentNormal = new THREE.Vector2(localNormal.x, localNormal.y);
+        if (dentNormal.lengthSq() > 0.0001) {
+          dentNormal.normalize();
+          softness.dentNormal.copy(dentNormal);
+          softness.dentCenter.copy(dentNormal).multiplyScalar(-1);
+          softness.dentAmount = Math.min(plushSoftnessTuning.maxDent, normalizedStrength * plushSoftnessTuning.impactDentAmount);
+          softness.dentVelocity += softness.dentAmount * 12;
+        }
+        softness.wobbleVelocity += Math.sign(localNormal.x || localNormal.y || 1) * normalizedStrength * plushSoftnessTuning.wobbleAmount * 22;
+      };
+
+      const applyPlushSoftnessFrame = (mesh, physics, softness, deltaSeconds) => {
+        const visualGroup = getPlushVisualGroup(mesh);
+        if (!visualGroup) return;
+        const springForce = new THREE.Vector3(1, 1, 1).sub(softness.scale).multiplyScalar(plushSoftnessTuning.returnSpringStrength);
+        softness.scaleVelocity.addScaledVector(springForce, deltaSeconds);
+        softness.scaleVelocity.multiplyScalar(Math.exp(-plushSoftnessTuning.scaleDamping * deltaSeconds));
+        softness.scale.addScaledVector(softness.scaleVelocity, deltaSeconds);
+        softness.scale.set(
+          clamp(softness.scale.x, 1 - plushSoftnessTuning.maxSquash, 1 + plushSoftnessTuning.maxSquash),
+          clamp(softness.scale.y, 1 - plushSoftnessTuning.maxSquash, 1 + plushSoftnessTuning.maxSquash),
+          clamp(softness.scale.z, 1 - plushSoftnessTuning.maxSquash, 1 + plushSoftnessTuning.maxSquash)
+        );
+        softness.wobbleVelocity += -softness.wobbleAngle * plushSoftnessTuning.wobbleSpringStrength * deltaSeconds;
+        softness.wobbleVelocity *= Math.exp(-plushSoftnessTuning.wobbleDamping * deltaSeconds);
+        softness.wobbleAngle += softness.wobbleVelocity * deltaSeconds;
+        softness.dentVelocity += -softness.dentAmount * plushSoftnessTuning.dentSpringStrength * deltaSeconds;
+        softness.dentVelocity *= Math.exp(-plushSoftnessTuning.dentDamping * deltaSeconds);
+        softness.dentAmount += softness.dentVelocity * deltaSeconds;
+        if (softness.dentAmount < 0.001 && Math.abs(softness.dentVelocity) < 0.001) {
+          softness.dentAmount = 0;
+          softness.dentVelocity = 0;
+        }
+        softness.dentAmount = clamp(softness.dentAmount, 0, plushSoftnessTuning.maxDent);
+        const localVelocity = physics.velocity.clone().applyQuaternion(mesh.quaternion.clone().invert());
+        const targetBend = new THREE.Vector2(
+          clamp((-localVelocity.x * plushSoftnessTuning.velocityBendAmount + physics.angularVelocity.z * plushSoftnessTuning.spinBendAmount) * plushSoftnessTuning.bodyFlexAmount, -plushSoftnessTuning.maxBend, plushSoftnessTuning.maxBend),
+          clamp(-localVelocity.y * plushSoftnessTuning.velocityBendAmount * plushSoftnessTuning.bodyFlexAmount, -plushSoftnessTuning.maxBend, plushSoftnessTuning.maxBend)
+        );
+        softness.bendVelocity.addScaledVector(targetBend.sub(softness.bend).multiplyScalar(plushSoftnessTuning.bendSpringStrength), deltaSeconds);
+        softness.bendVelocity.multiplyScalar(Math.exp(-plushSoftnessTuning.bendDamping * deltaSeconds));
+        softness.bend.addScaledVector(softness.bendVelocity, deltaSeconds);
+        if (softness.bend.length() > plushSoftnessTuning.maxBend) softness.bend.setLength(plushSoftnessTuning.maxBend);
+        visualGroup.scale.copy(softness.scale);
+        visualGroup.rotation.z = clamp(softness.wobbleAngle, -plushSoftnessTuning.wobbleAmount, plushSoftnessTuning.wobbleAmount);
+        updateGpuBend(mesh, softness);
+      };
+
+      const clampAngularVelocity = (angularVelocity) => {
+        if (angularVelocity.lengthSq() > PHYSICS_MAX_ANGULAR_SPEED * PHYSICS_MAX_ANGULAR_SPEED) {
+          angularVelocity.setLength(PHYSICS_MAX_ANGULAR_SPEED);
+        }
+      };
+
+      const applyAngularVelocity = (mesh, angularVelocity, deltaSeconds) => {
+        const angularSpeed = angularVelocity.length();
+        if (angularSpeed <= 0.0001) return;
+        const rotationDelta = new THREE.Quaternion().setFromAxisAngle(angularVelocity.clone().normalize(), angularSpeed * deltaSeconds);
+        mesh.quaternion.premultiply(rotationDelta);
+        mesh.quaternion.normalize();
+      };
+
+      const dampRestingFloorMotion = (physics) => {
+        physics.velocity.x *= PHYSICS_FLOOR_REST_DAMPING;
+        physics.velocity.y = Math.max(0, physics.velocity.y);
+        physics.angularVelocity.multiplyScalar(PHYSICS_FLOOR_REST_ANGULAR_DAMPING);
+        if (
+          Math.abs(physics.velocity.x) < PHYSICS_SLEEP_VELOCITY &&
+          Math.abs(physics.velocity.y) < PHYSICS_SLEEP_VELOCITY &&
+          physics.angularVelocity.length() < PHYSICS_SLEEP_ANGULAR_VELOCITY
+        ) {
+          physics.velocity.set(0, 0, 0);
+          physics.angularVelocity.set(0, 0, 0);
+        }
+      };
+
+      const clampPlushToBounds = (mesh, physics) => {
+        const halfExtents = getProjectedHalfExtents(mesh, physics);
+        const maxX = Math.max(0, viewportWorldWidth / 2 - halfExtents.x);
+        const maxY = Math.max(0, viewportWorldHeight / 2 - halfExtents.y);
+        const impacts = [];
+        let isTouchingFloor = false;
+        if (physics.position.x < -maxX) {
+          const impactStrength = Math.abs(physics.velocity.x);
+          physics.position.x = -maxX;
+          physics.velocity.x = Math.abs(physics.velocity.x) * PHYSICS_BOUNCE;
+          physics.angularVelocity.z += Math.abs(physics.velocity.y) * 0.08;
+          if (impactStrength >= plushSoftnessTuning.impactThreshold) impacts.push({ normal: new THREE.Vector3(1, 0, 0), strength: impactStrength });
+        } else if (physics.position.x > maxX) {
+          const impactStrength = Math.abs(physics.velocity.x);
+          physics.position.x = maxX;
+          physics.velocity.x = -Math.abs(physics.velocity.x) * PHYSICS_BOUNCE;
+          physics.angularVelocity.z -= Math.abs(physics.velocity.y) * 0.08;
+          if (impactStrength >= plushSoftnessTuning.impactThreshold) impacts.push({ normal: new THREE.Vector3(-1, 0, 0), strength: impactStrength });
+        }
+        if (physics.position.y < -maxY) {
+          const impactStrength = Math.abs(physics.velocity.y);
+          physics.position.y = -maxY;
+          physics.velocity.y = Math.abs(physics.velocity.y) * PHYSICS_BOUNCE;
+          physics.velocity.x *= PHYSICS_FLOOR_FRICTION;
+          physics.angularVelocity.multiplyScalar(PHYSICS_FLOOR_ANGULAR_DAMPING);
+          isTouchingFloor = true;
+          if (impactStrength >= plushSoftnessTuning.impactThreshold) impacts.push({ normal: new THREE.Vector3(0, 1, 0), strength: impactStrength });
+        } else if (physics.position.y > maxY) {
+          const impactStrength = Math.abs(physics.velocity.y);
+          physics.position.y = maxY;
+          physics.velocity.y = -Math.abs(physics.velocity.y) * PHYSICS_BOUNCE;
+          physics.angularVelocity.z -= physics.velocity.x * 0.08;
+          if (impactStrength >= plushSoftnessTuning.impactThreshold) impacts.push({ normal: new THREE.Vector3(0, -1, 0), strength: impactStrength });
+        }
+        return { impacts, isTouchingFloor };
+      };
+
+      const applyPhysicsFrame = (runtime, frameTime) => {
+        const { mesh, physics, softness } = runtime;
+        if (physics.lastFrameTime === null) {
+          physics.lastFrameTime = frameTime;
+          return;
+        }
+        const deltaSeconds = Math.min(0.033, (frameTime - physics.lastFrameTime) / 1000);
+        physics.lastFrameTime = frameTime;
+        if (physics.dragging) {
+          const previousPosition = physics.position.clone();
+          physics.angularVelocity.x = 0;
+          physics.angularVelocity.y = 0;
+          const grabWorldOffset = physics.grabLocalOffset.clone().applyQuaternion(mesh.quaternion);
+          const gravityTorqueZ = -(grabWorldOffset.x * gravity.y - grabWorldOffset.y * gravity.x);
+          physics.angularVelocity.z += gravityTorqueZ * PHYSICS_HANG_TORQUE * deltaSeconds;
+          clampAngularVelocity(physics.angularVelocity);
+          physics.angularVelocity.multiplyScalar(PHYSICS_HANG_DAMPING);
+          applyAngularVelocity(mesh, new THREE.Vector3(0, 0, physics.angularVelocity.z), deltaSeconds);
+          const nextGrabWorldOffset = physics.grabLocalOffset.clone().applyQuaternion(mesh.quaternion);
+          physics.position.copy(physics.dragAnchor).sub(nextGrabWorldOffset);
+          physics.position.z = runtime.depthZ;
+          physics.velocity.subVectors(physics.position, previousPosition).multiplyScalar(1 / Math.max(deltaSeconds, 0.001));
+          physics.velocity.z = 0;
+        } else {
+          physics.velocity.addScaledVector(gravity, deltaSeconds);
+          const fallSpeed = Math.min(1.8, physics.velocity.length() / PHYSICS_GRAVITY);
+          const gravityTumbleZ = physics.velocity.x * gravity.y - physics.velocity.y * gravity.x;
+          physics.angularVelocity.x += gravity.y * PHYSICS_AIR_GRAVITY_ROLL * fallSpeed * deltaSeconds;
+          physics.angularVelocity.y -= gravity.x * PHYSICS_AIR_GRAVITY_ROLL * fallSpeed * deltaSeconds;
+          physics.angularVelocity.z += gravityTumbleZ * PHYSICS_AIR_GRAVITY_TUMBLE * deltaSeconds;
+          clampAngularVelocity(physics.angularVelocity);
+          physics.position.addScaledVector(physics.velocity, deltaSeconds);
+          physics.velocity.multiplyScalar(PHYSICS_LINEAR_DAMPING);
+          applyAngularVelocity(mesh, physics.angularVelocity, deltaSeconds);
+          physics.angularVelocity.multiplyScalar(PHYSICS_ANGULAR_DAMPING);
+          const { impacts, isTouchingFloor } = clampPlushToBounds(mesh, physics);
+          impacts.forEach((impact) => registerPlushImpact(mesh, softness, impact));
+          if (impacts.length > 0 && physics.velocity.length() < PHYSICS_PLUSH_RESTING_CONTACT_SPEED) {
+            physics.velocity.multiplyScalar(PHYSICS_FLOOR_REST_DAMPING);
+            physics.angularVelocity.multiplyScalar(PHYSICS_FLOOR_REST_ANGULAR_DAMPING);
+          }
+          if (isTouchingFloor) {
+            const tallness = Math.max(0, (physics.halfHeight - physics.halfWidth) / Math.max(physics.halfHeight, 0.001));
+            const uprightness = Math.abs(Math.cos(mesh.rotation.z));
+            const toppleDirection = Math.sign(physics.angularVelocity.z || physics.velocity.x || Math.sin(mesh.rotation.z) || 1);
+            physics.angularVelocity.z += toppleDirection * tallness * uprightness * PHYSICS_FLOOR_TOPPLE_TORQUE * deltaSeconds;
+            physics.angularVelocity.multiplyScalar(PHYSICS_FLOOR_ANGULAR_DAMPING);
+            if (physics.velocity.length() < PHYSICS_REST_VELOCITY && uprightness < 0.28) {
+              physics.velocity.set(0, 0, 0);
+              physics.angularVelocity.set(0, 0, 0);
+            }
+            if (physics.velocity.length() < PHYSICS_PLUSH_RESTING_CONTACT_SPEED) dampRestingFloorMotion(physics);
+          }
+        }
+        applyPlushSoftnessFrame(mesh, physics, softness, deltaSeconds);
+        physics.velocity.z = 0;
+        mesh.position.copy(physics.position);
+      };
+
+      const getScreenWorldPoint = (runtime, localPoint) => localPoint.clone().applyQuaternion(runtime.mesh.quaternion).add(runtime.physics.position);
+      const getProjectedCollisionPoints = (runtime) =>
+        runtime.mesh.userData.hitMask.collisionPoints.map((samplePoint) => {
+          const worldPoint = getScreenWorldPoint(runtime, samplePoint);
+          return { x: worldPoint.x, y: worldPoint.y };
+        });
+      const getCollisionCellKey = (x, y) => `${Math.floor(x / PHYSICS_SCREEN_COLLISION_CELL_SIZE)},${Math.floor(y / PHYSICS_SCREEN_COLLISION_CELL_SIZE)}`;
+      const createProjectedPointGrid = (points) => {
+        const grid = new Map();
+        points.forEach((point) => {
+          const key = getCollisionCellKey(point.x, point.y);
+          const cellPoints = grid.get(key);
+          if (cellPoints) cellPoints.push(point);
+          else grid.set(key, [point]);
+        });
+        return grid;
+      };
+      const hasNearbyProjectedPoint = (point, targetGrid) => {
+        const cellX = Math.floor(point.x / PHYSICS_SCREEN_COLLISION_CELL_SIZE);
+        const cellY = Math.floor(point.y / PHYSICS_SCREEN_COLLISION_CELL_SIZE);
+        const maxDistanceSq = PHYSICS_SCREEN_COLLISION_CELL_SIZE * PHYSICS_SCREEN_COLLISION_CELL_SIZE;
+        for (let yOffset = -1; yOffset <= 1; yOffset += 1) {
+          for (let xOffset = -1; xOffset <= 1; xOffset += 1) {
+            const cellPoints = targetGrid.get(`${cellX + xOffset},${cellY + yOffset}`);
+            if (!cellPoints) continue;
+            for (const targetPoint of cellPoints) {
+              const dx = point.x - targetPoint.x;
+              const dy = point.y - targetPoint.y;
+              if (dx * dx + dy * dy <= maxDistanceSq) return true;
+            }
+          }
+        }
+        return false;
+      };
+      const getMaskOverlap = (source, target, sourcePoints, targetGrid) => {
+        const sourceHitMask = source.mesh.userData.hitMask;
+        let overlapCount = 0;
+        const overlapCenter = new THREE.Vector2();
+        for (const point of sourcePoints) {
+          if (hasNearbyProjectedPoint(point, targetGrid)) {
+            overlapCount += 1;
+            overlapCenter.x += point.x;
+            overlapCenter.y += point.y;
+          }
+        }
+        if (overlapCount === 0) return { count: 0, normal: new THREE.Vector2() };
+        overlapCenter.multiplyScalar(1 / overlapCount);
+        return {
+          count: overlapCount * sourceHitMask.collisionSampleSpacing,
+          normal: new THREE.Vector2(overlapCenter.x - target.physics.position.x, overlapCenter.y - target.physics.position.y),
+        };
+      };
+
+      const resolvePlushCollision = (a, b) => {
+        const delta = new THREE.Vector2(b.physics.position.x - a.physics.position.x, b.physics.position.y - a.physics.position.y);
+        const distance = Math.max(delta.length(), 0.0001);
+        const minDistance = a.physics.radius * PHYSICS_PLUSH_COLLISION_RADIUS_SCALE + b.physics.radius * PHYSICS_PLUSH_COLLISION_RADIUS_SCALE;
+        if (distance >= minDistance * 1.12) return;
+        const aPoints = getProjectedCollisionPoints(a);
+        const bPoints = getProjectedCollisionPoints(b);
+        const aIntoB = getMaskOverlap(a, b, aPoints, createProjectedPointGrid(bPoints));
+        const bIntoA = getMaskOverlap(b, a, bPoints, createProjectedPointGrid(aPoints));
+        const overlapCount = aIntoB.count + bIntoA.count;
+        if (overlapCount === 0) return;
+        const overlapNormal = bIntoA.normal.clone().sub(aIntoB.normal);
+        const normal = overlapNormal.lengthSq() > 0.0001 ? overlapNormal.normalize() : delta.multiplyScalar(1 / distance);
+        const relativeVelocity = new THREE.Vector2(b.physics.velocity.x - a.physics.velocity.x, b.physics.velocity.y - a.physics.velocity.y);
+        const separatingSpeed = relativeVelocity.dot(normal);
+        const contactSpeed = Math.abs(separatingSpeed);
+        const maskOverlap = Math.max(0, overlapCount - PHYSICS_PLUSH_RESTING_OVERLAP_ALLOWANCE);
+        const overlap = Math.min(PHYSICS_PLUSH_MAX_MASK_PUSH, maskOverlap * 0.0012);
+        const correction = normal.clone().multiplyScalar(overlap * PHYSICS_PLUSH_COLLISION_PUSH);
+        if (separatingSpeed > 0) return;
+        if (contactSpeed < PHYSICS_PLUSH_RESTING_CONTACT_SPEED) {
+          const restingCorrection = correction.clone().multiplyScalar(PHYSICS_PLUSH_RESTING_POSITION_CORRECTION);
+          if (overlap > 0) {
+            if (!a.physics.dragging) a.physics.position.add(new THREE.Vector3(-restingCorrection.x * 0.5, -restingCorrection.y * 0.5, 0));
+            if (!b.physics.dragging) b.physics.position.add(new THREE.Vector3(restingCorrection.x * 0.5, restingCorrection.y * 0.5, 0));
+          }
+          if (!a.physics.dragging) {
+            a.physics.velocity.x += normal.x * separatingSpeed * 0.5;
+            a.physics.velocity.y += normal.y * separatingSpeed * 0.5;
+            a.physics.velocity.multiplyScalar(PHYSICS_PLUSH_CONTACT_DAMPING);
+            a.physics.angularVelocity.multiplyScalar(PHYSICS_PLUSH_CONTACT_DAMPING);
+          }
+          if (!b.physics.dragging) {
+            b.physics.velocity.x -= normal.x * separatingSpeed * 0.5;
+            b.physics.velocity.y -= normal.y * separatingSpeed * 0.5;
+            b.physics.velocity.multiplyScalar(PHYSICS_PLUSH_CONTACT_DAMPING);
+            b.physics.angularVelocity.multiplyScalar(PHYSICS_PLUSH_CONTACT_DAMPING);
+          }
+          return;
+        }
+        if (overlap > 0) {
+          if (!a.physics.dragging) a.physics.position.add(new THREE.Vector3(-correction.x * 0.5, -correction.y * 0.5, 0));
+          if (!b.physics.dragging) b.physics.position.add(new THREE.Vector3(correction.x * 0.5, correction.y * 0.5, 0));
+        }
+        const impulse = normal.clone().multiplyScalar(-(1 + PHYSICS_PLUSH_COLLISION_BOUNCE) * separatingSpeed * 0.5);
+        if (!a.physics.dragging) {
+          a.physics.velocity.x -= impulse.x;
+          a.physics.velocity.y -= impulse.y;
+          a.physics.angularVelocity.z -= impulse.y * 0.08;
+        }
+        if (!b.physics.dragging) {
+          b.physics.velocity.x += impulse.x;
+          b.physics.velocity.y += impulse.y;
+          b.physics.angularVelocity.z += impulse.y * 0.08;
+        }
+        if (contactSpeed >= plushSoftnessTuning.impactThreshold) {
+          registerPlushImpact(a.mesh, a.softness, { normal: new THREE.Vector3(-normal.x, -normal.y, 0), strength: contactSpeed });
+          registerPlushImpact(b.mesh, b.softness, { normal: new THREE.Vector3(normal.x, normal.y, 0), strength: contactSpeed });
+        }
+      };
+
+      const resolvePlushCollisions = () => {
+        for (let firstIndex = 0; firstIndex < runtimes.length; firstIndex += 1) {
+          for (let secondIndex = firstIndex + 1; secondIndex < runtimes.length; secondIndex += 1) {
+            resolvePlushCollision(runtimes[firstIndex], runtimes[secondIndex]);
+          }
+        }
+      };
+
+      const settleRestingPlushes = () => {
+        runtimes.forEach((runtime) => {
+          const halfExtents = getProjectedHalfExtents(runtime.mesh, runtime.physics);
+          const floorY = -(viewportWorldHeight / 2 - halfExtents.y);
+          const isOnFloor = runtime.physics.position.y <= floorY + 0.012;
+          if (!runtime.physics.dragging && isOnFloor && runtime.physics.velocity.length() < PHYSICS_PLUSH_RESTING_CONTACT_SPEED) {
+            dampRestingFloorMotion(runtime.physics);
+          }
+        });
+      };
+
+      const worldPointFromPointer = (clientX, clientY) => {
+        const rect = playArea.getBoundingClientRect();
+        return new THREE.Vector3(
+          ((clientX - rect.left) / rect.width - 0.5) * viewportWorldWidth,
+          (0.5 - (clientY - rect.top) / rect.height) * viewportWorldHeight,
+          0
+        );
+      };
+
+      const hitTest = (clientX, clientY) => {
+        const touchPoint = worldPointFromPointer(clientX, clientY);
+        const touchableRuntimes = [...runtimes].sort((a, b) => b.depthZ - a.depthZ);
+        for (const runtime of touchableRuntimes) {
+          const hitMask = runtime.mesh.userData.hitMask;
+          const localPoint = touchPoint
+            .clone()
+            .setZ(runtime.depthZ)
+            .sub(runtime.physics.position)
+            .applyQuaternion(runtime.mesh.quaternion.clone().invert());
+          const gridCol = Math.floor((localPoint.x / hitMask.scaledWidth) * hitMask.cols + hitMask.centerCol);
+          const gridRow = Math.floor(hitMask.centerRow - (localPoint.y / hitMask.scaledHeight) * hitMask.rows);
+          for (let row = gridRow - 2; row <= gridRow + 2; row += 1) {
+            for (let col = gridCol - 2; col <= gridCol + 2; col += 1) {
+              if (row >= 0 && row < hitMask.rows && col >= 0 && col < hitMask.cols && hitMask.cells[row][col]) return runtime;
+            }
+          }
+        }
+        return null;
+      };
+
+      const resize = () => {
+        const rect = playArea.getBoundingClientRect();
+        renderer.setSize(rect.width, rect.height, false);
+        camera.aspect = rect.width / rect.height;
+        camera.updateProjectionMatrix();
+        viewportWorldHeight = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * camera.position.z;
+        viewportWorldWidth = viewportWorldHeight * camera.aspect;
+      };
+
+      const createPlushRuntime = (image, index, totalCount) => {
+        const mesh = createPlushMesh(image);
+        const shadow = createPlushShadow();
+        const physics = createPhysicsState();
+        const softness = createSoftnessState();
+        const depthZ = getVisualDepthForIndex(index, totalCount);
+        scene.add(shadow, mesh);
+        physics.radius = mesh.userData.physicsRadius ?? PLUSH_TARGET_SIZE / 2;
+        physics.halfWidth = mesh.userData.physicsHalfWidth ?? PLUSH_TARGET_SIZE / 2;
+        physics.halfHeight = mesh.userData.physicsHalfHeight ?? PLUSH_TARGET_SIZE / 2;
+        resetPlushSoftness(mesh, softness);
+        const startHalfExtents = getProjectedHalfExtents(mesh, physics);
+        const startX = (index - (totalCount - 1) / 2) * PLUSH_TARGET_SIZE * 0.74;
+        const startY = Math.max(0, viewportWorldHeight / 2 - startHalfExtents.y);
+        physics.position.set(startX, startY, depthZ);
+        physics.velocity.set(0, -0.35, 0);
+        mesh.position.copy(physics.position);
+        const runtime = { depthZ, mesh, physics, shadow, softness };
+        updatePlushShadow(runtime, true);
+        return runtime;
+      };
+
+      const onPointerDown = (event) => {
+        const runtime = hitTest(event.clientX, event.clientY);
+        if (!runtime) return;
+        event.preventDefault();
+        playArea.setPointerCapture(event.pointerId);
+        pointer.active = true;
+        pointer.id = event.pointerId;
+        pointer.startX = event.clientX;
+        pointer.startY = event.clientY;
+        pointer.lastX = event.clientX;
+        pointer.lastY = event.clientY;
+        pointer.lastTime = performance.now();
+        pointer.velocityX = 0;
+        pointer.velocityY = 0;
+        pointer.runtime = runtime;
+        const touchPoint = worldPointFromPointer(event.clientX, event.clientY).setZ(runtime.depthZ);
+        const physics = runtime.physics;
+        physics.dragging = true;
+        physics.dragAnchor.copy(touchPoint);
+        physics.grabLocalOffset.copy(touchPoint).sub(physics.position).applyQuaternion(runtime.mesh.quaternion.clone().invert());
+        physics.velocity.set(0, 0, 0);
+        physics.angularVelocity.x = 0;
+        physics.angularVelocity.y = 0;
+      };
+
+      const onPointerMove = (event) => {
+        if (!pointer.active || event.pointerId !== pointer.id || !pointer.runtime) return;
+        event.preventDefault();
+        const now = performance.now();
+        const dt = Math.max(0.001, (now - pointer.lastTime) / 1000);
+        pointer.velocityX = (event.clientX - pointer.lastX) / dt;
+        pointer.velocityY = (event.clientY - pointer.lastY) / dt;
+        pointer.lastX = event.clientX;
+        pointer.lastY = event.clientY;
+        pointer.lastTime = now;
+        const runtime = pointer.runtime;
+        const physics = runtime.physics;
+        const touchPoint = worldPointFromPointer(event.clientX, event.clientY).setZ(runtime.depthZ);
+        const previousPosition = physics.position.clone();
+        const anchorVelocity = touchPoint.clone().sub(physics.dragAnchor).multiplyScalar(60);
+        physics.dragAnchor.copy(touchPoint);
+        physics.position.copy(touchPoint).sub(physics.grabLocalOffset.clone().applyQuaternion(runtime.mesh.quaternion));
+        physics.position.z = runtime.depthZ;
+        physics.velocity.subVectors(physics.position, previousPosition).multiplyScalar(60);
+        physics.velocity.z = 0;
+        const grabWorldOffset = physics.grabLocalOffset.clone().applyQuaternion(runtime.mesh.quaternion);
+        const dragTorqueZ = grabWorldOffset.x * anchorVelocity.y - grabWorldOffset.y * anchorVelocity.x;
+        physics.angularVelocity.x = 0;
+        physics.angularVelocity.y = 0;
+        physics.angularVelocity.z += dragTorqueZ * PHYSICS_DRAG_ROTATION;
+        clampAngularVelocity(physics.angularVelocity);
+        runtime.mesh.position.copy(physics.position);
+      };
+
+      const onPointerUp = (event) => {
+        if (!pointer.active || event.pointerId !== pointer.id || !pointer.runtime) return;
+        event.preventDefault();
+        const runtime = pointer.runtime;
+        const physics = runtime.physics;
+        const movedDistance = Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY);
+        const gestureReleaseVelocity = new THREE.Vector3(
+          (pointer.velocityX / playArea.clientWidth) * viewportWorldWidth * PHYSICS_RELEASE_VELOCITY_SCALE,
+          (-pointer.velocityY / playArea.clientHeight) * viewportWorldHeight * PHYSICS_RELEASE_VELOCITY_SCALE,
+          0
+        );
+        const trackedReleaseVelocity = physics.velocity.clone().multiplyScalar(0.92);
+        const releaseVelocity =
+          gestureReleaseVelocity.lengthSq() >= trackedReleaseVelocity.lengthSq() ? gestureReleaseVelocity : trackedReleaseVelocity;
+        const grabWorldOffset = physics.grabLocalOffset.clone().applyQuaternion(runtime.mesh.quaternion);
+        const torque = grabWorldOffset.cross(releaseVelocity);
+        const tumble = new THREE.Vector3(-releaseVelocity.y, releaseVelocity.x, releaseVelocity.x * 0.45 - releaseVelocity.y * 0.35);
+        physics.dragging = false;
+        if (movedDistance < TAP_MOVE_THRESHOLD) {
+          physics.velocity.set(0, 0, 0);
+          physics.angularVelocity.set(0, 0, 0);
+        } else {
+          physics.velocity.copy(releaseVelocity);
+          physics.angularVelocity.multiplyScalar(0.9);
+          physics.angularVelocity.addScaledVector(torque, PHYSICS_RELEASE_TORQUE);
+          physics.angularVelocity.addScaledVector(tumble, PHYSICS_THROW_TUMBLE);
+          clampAngularVelocity(physics.angularVelocity);
+        }
+        pointer.active = false;
+        pointer.id = null;
+        pointer.runtime = null;
+      };
+
+      playArea.addEventListener("pointerdown", onPointerDown);
+      playArea.addEventListener("pointermove", onPointerMove);
+      playArea.addEventListener("pointerup", onPointerUp);
+      playArea.addEventListener("pointercancel", onPointerUp);
+      window.addEventListener("resize", resize);
+
+      const render = (frameTime) => {
+        runtimes.forEach((runtime) => applyPhysicsFrame(runtime, frameTime));
+        resolvePlushCollisions();
+        settleRestingPlushes();
+        runtimes.forEach((runtime) => {
+          runtime.physics.position.z = runtime.depthZ;
+          runtime.mesh.position.copy(runtime.physics.position);
+          updatePlushShadow(runtime, true);
+        });
+        renderer.render(scene, camera);
+        requestAnimationFrame(render);
+      };
+
+      const boot = async () => {
+        resize();
+        const images = await Promise.all([
+          loadImageData("./assets/scared-cat.png"),
+          loadImageData("./assets/kermy.png"),
+          loadImageData("./assets/me-af.png"),
+        ]);
+        runtimes = images.map((image, index) => createPlushRuntime(image, index, images.length));
+        let pulseKey = 0;
+        applyPartyPulse(pulseKey);
+        window.setInterval(() => {
+          pulseKey += 1;
+          applyPartyPulse(pulseKey);
+        }, PARTY_PULSE_INTERVAL_MS);
+        requestAnimationFrame(render);
+      };
+
+      boot();
+    </script>
+  </body>
+</html>

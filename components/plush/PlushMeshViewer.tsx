@@ -17,6 +17,7 @@ type PlushMeshViewerProps = {
   focusedShakeKey?: number;
   gatherKey?: number;
   globalShakeKey?: number;
+  manualShakePulseKey?: number;
   focusedScreenY?: number;
   pendingFocusPlushId?: string | null;
   onFocusedPlushLayout?: (layout: { petX: number; petY: number; poofX: number; poofY: number; x: number; y: number }) => void;
@@ -1907,6 +1908,7 @@ export function PlushMeshViewer({
   focusedShakeKey = 0,
   gatherKey = 0,
   globalShakeKey = 0,
+  manualShakePulseKey = 0,
   focusedScreenY = 0.54,
   onFocusedPlushLayout,
   onEmptyPress,
@@ -1954,6 +1956,7 @@ export function PlushMeshViewer({
   const globalShakeKeyRef = useRef(globalShakeKey);
   const globalShakeStartedAtRef = useRef<number | null>(null);
   const isGlobalShakePendingRef = useRef(false);
+  const manualShakePulseKeyRef = useRef(manualShakePulseKey);
   const isExitingFocusRef = useRef(false);
   const isPetPulsePendingRef = useRef(false);
   const petPulseKeyRef = useRef(petPulseKey);
@@ -1969,6 +1972,26 @@ export function PlushMeshViewer({
 
     applyPartyPulse(runtimesRef.current, partyPulseKey);
   }, [partyPulseKey]);
+
+  useEffect(() => {
+    if (manualShakePulseKey <= manualShakePulseKeyRef.current) {
+      manualShakePulseKeyRef.current = manualShakePulseKey;
+      return;
+    }
+
+    const canJostlePlushes =
+      physicsEnabledRef.current &&
+      !focusedPlushIdRef.current &&
+      !pendingFocusPlushIdRef.current &&
+      !dimPlushesRef.current &&
+      gatherStartedAtRef.current === null;
+
+    if (canJostlePlushes) {
+      applyShakeImpulse(runtimesRef.current, new THREE.Vector3(1.25, 0.75, 0));
+    }
+
+    manualShakePulseKeyRef.current = manualShakePulseKey;
+  }, [manualShakePulseKey]);
 
   useEffect(() => {
     physicsEnabledRef.current = physicsEnabled;
@@ -2102,6 +2125,7 @@ export function PlushMeshViewer({
       PanResponder.create({
         onStartShouldSetPanResponder: (event) =>
           Boolean(focusedPlushIdRef.current) ||
+          Boolean(onEmptyPress) ||
           Boolean(isTouchOnPlush(stateRef.current, runtimesRef.current, layoutRef.current, event)),
         onMoveShouldSetPanResponder: (event) =>
           Boolean(focusedPlushIdRef.current) ||
@@ -2238,8 +2262,20 @@ export function PlushMeshViewer({
             return;
           }
 
-          if (!physicsEnabled || !activeRuntime) {
+          if (!activeRuntime) {
+            if (gestureStartedOnEmptyRef.current && movedDistance < TAP_MOVE_THRESHOLD) {
+              onEmptyPress?.();
+            }
+
             activeRuntimeRef.current = null;
+            gestureStartedOnEmptyRef.current = false;
+            onPlushDragChange?.(false);
+            return;
+          }
+
+          if (!physicsEnabled) {
+            activeRuntimeRef.current = null;
+            gestureStartedOnEmptyRef.current = false;
             onPlushDragChange?.(false);
             return;
           }
@@ -2280,6 +2316,7 @@ export function PlushMeshViewer({
             onPlushDrop?.(activeRuntime.id, { x: gesture.moveX, y: gesture.moveY });
           }
           activeRuntimeRef.current = null;
+          gestureStartedOnEmptyRef.current = false;
           onPlushDragChange?.(false);
         },
         onPanResponderTerminate: () => {

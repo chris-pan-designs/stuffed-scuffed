@@ -45,25 +45,25 @@ const DOCK_TONES = {
   library: {
     background: '#F9DDF1',
     border: '#E8A1DD',
-    outerBackground: '#FBF5EF',
+    outerBackground: '#FFFFFF',
     primary: '#B22683',
   },
   camera: {
     background: '#E3F0F8',
     border: '#7CBCEB',
-    outerBackground: '#FBF5EF',
+    outerBackground: '#FFFFFF',
     primary: '#2865B8',
   },
   party: {
     background: '#E8DDFC',
     border: '#B89CF0',
-    outerBackground: '#FBF5EF',
+    outerBackground: '#FFFFFF',
     primary: '#5D35A7',
   },
   reset: {
     background: '#E8F2EC',
     border: '#9ACBC2',
-    outerBackground: '#FBF5EF',
+    outerBackground: '#FFFFFF',
     primary: '#1F6762',
   },
 } satisfies Record<string, DockButtonTone>;
@@ -99,25 +99,25 @@ const FOCUS_DOCK_TONES = {
   back: {
     background: '#EAFBDF',
     border: '#B8ECAF',
-    outerBackground: '#FBF5EF',
+    outerBackground: '#FFFFFF',
     primary: '#5BA81E',
   },
   edit: {
     background: '#FFF4E8',
     border: '#F0B46B',
-    outerBackground: '#FBF5EF',
+    outerBackground: '#FFFFFF',
     primary: '#C8741D',
   },
   delete: {
     background: '#FFE6EA',
     border: '#F3A5AD',
-    outerBackground: '#FBF5EF',
+    outerBackground: '#FFFFFF',
     primary: '#BF2C4D',
   },
   pet: {
     background: '#DCF7F7',
     border: '#73DCE3',
-    outerBackground: '#FBF5EF',
+    outerBackground: '#FFFFFF',
     primary: '#28ACB8',
   },
 } satisfies Record<string, DockButtonTone>;
@@ -289,7 +289,7 @@ const NAME_TAG_MAX_WIDTH = 280;
 const NAME_TAG_HORIZONTAL_PADDING = 12;
 const NAME_TAG_TEXT_MAX_WIDTH = NAME_TAG_MAX_WIDTH - NAME_TAG_HORIZONTAL_PADDING * 2;
 const BACKGROUND_REMOVAL_MAX_IMAGE_SIZE = 1024;
-const SHOULD_USE_BACKGROUND_REMOVAL_API = false;
+const SHOULD_USE_BACKGROUND_REMOVAL_API = true;
 
 type ActionButtonProps = {
   accessibilityLabel: string;
@@ -374,6 +374,7 @@ export default function HomeScreen() {
   const [isPartyMode, setIsPartyMode] = useState(false);
   const [isPartyVisualVisible, setIsPartyVisualVisible] = useState(false);
   const [partyPulseKey, setPartyPulseKey] = useState(0);
+  const [manualShakePulseKey, setManualShakePulseKey] = useState(0);
   const [isPreparingPlush, setIsPreparingPlush] = useState(false);
   const [isRemovingBackground, setIsRemovingBackground] = useState(false);
   const [isLoadingVisualVisible, setIsLoadingVisualVisible] = useState(false);
@@ -997,13 +998,14 @@ export default function HomeScreen() {
         {plushes.length > 0 ? (
           <View style={styles.previewFrame}>
             <PlushMeshViewer
-              backgroundColor="#FCF1E9"
+              backgroundColor="#FFFFFF"
               dimPlushes={isWorking || Boolean(pendingNamingPlushId)}
               focusedLerp={isNamingFocusedPlush ? 0.055 : undefined}
               focusedPlushId={focusedPlushId}
               focusedShakeKey={focusedDeleteShakeKey}
               gatherKey={globalGatherKey}
               globalShakeKey={globalDeleteShakeKey}
+              manualShakePulseKey={manualShakePulseKey}
               focusedScreenY={focusedScreenY}
               onFocusedPlushLayout={(layout) => {
                 petPosition.setValue({
@@ -1025,7 +1027,14 @@ export default function HomeScreen() {
                   return;
                 }
 
-                setFocusedPlushId(null);
+                if (focusedPlushId) {
+                  setFocusedPlushId(null);
+                  return;
+                }
+
+                if (__DEV__) {
+                  setManualShakePulseKey((currentKey) => currentKey + 1);
+                }
               }}
               onPlushPress={focusPlush}
               partyPulseKey={partyPulseKey}
@@ -1345,7 +1354,7 @@ const styles = StyleSheet.create({
     flex: 1,
     marginHorizontal: 16,
     borderRadius: 22,
-    backgroundColor: '#FBF5EF',
+    backgroundColor: '#FFFFFF',
     padding: 4,
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 4 },
@@ -1361,7 +1370,7 @@ const styles = StyleSheet.create({
     flex: 1,
     overflow: 'hidden',
     borderRadius: 22,
-    backgroundColor: '#FCF1E9',
+    backgroundColor: '#FFFFFF',
   },
   playAreaInnerParty: {
     backgroundColor: '#0D0D0D',
@@ -1514,7 +1523,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     alignSelf: 'center',
     borderRadius: 12,
-    backgroundColor: '#FBF5EF',
+    backgroundColor: '#FFFFFF',
     padding: 4,
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 4 },
@@ -1613,7 +1622,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 22,
-    backgroundColor: '#FBF5EF',
+    backgroundColor: '#FFFFFF',
     padding: 4,
     shadowColor: '#000000',
     shadowOffset: { width: 0, height: 4 },
